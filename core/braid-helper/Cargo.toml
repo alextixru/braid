@@ -1,0 +1,32 @@
+[package]
+name = "braid-helper"
+description = "Root-помощник macOS: создаёт utun, ставит адрес, MTU, маршруты и DNS по командам приложения Braid, отдаёт fd по SCM_RIGHTS и возвращает систему в исходное состояние"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+# Переписан с macOS-порта FOCSQ (tun_darwin.rs, bin/tun_helper.rs; 2026 alextixru),
+# исходник — PolyForm Noncommercial 1.0.0 (THIRD_PARTY.md).
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[bin]]
+name = "braid-helper"
+path = "src/main.rs"
+
+[dependencies]
+braid-platform.workspace = true
+braid-proto.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+nix.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+system-configuration.workspace = true

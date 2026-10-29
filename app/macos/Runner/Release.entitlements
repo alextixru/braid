@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Без песочницы (тикет 08): приложение запускает root-помощник utun через
+	     sudo -n / osascript и держит unix-сокет к нему — из песочницы это невозможно. -->
 	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.network.client</key>
 	<true/>
 </dict>
 </plist>

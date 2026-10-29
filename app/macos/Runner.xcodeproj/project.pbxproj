@@ -213,6 +213,7 @@
 				33CC10EB2044A3C60003C045 /* Resources */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
+				B8A1D0E8F0C5A0C0F0C5A008 /* Embed braid-helper and libawg */,
 			);
 			buildRules = (
 			);
@@ -248,7 +249,7 @@
 						ProvisioningStyle = Automatic;
 						SystemCapabilities = {
 							com.apple.Sandbox = {
-								enabled = 1;
+								enabled = 0;
 							};
 						};
 					};
@@ -338,6 +339,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
+		};
+		B8A1D0E8F0C5A0C0F0C5A008 /* Embed braid-helper and libawg */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed braid-helper and libawg";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n# Тикет 08: root-помощник utun и libawg.dylib встраиваются в .app с ad-hoc подписью.\n#   braid-helper → Contents/MacOS рядом с исполняемым файлом (там его ищет braid-platform);\n#   libawg.dylib → Contents/Frameworks (LD_RUNPATH_SEARCH_PATHS = @executable_path/../Frameworks).\n# Сборка под все ARCHS в чистом окружении: переменные Xcode ломают cc-сборку и кэш cargo.\nROOT=\"$PROJECT_DIR/../..\"\nCORE=\"$ROOT/core\"\nHELPER_OUT=\"$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/braid-helper\"\nFRAMEWORKS_OUT=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nCLEAN_ENV=\"env -i HOME=$HOME PATH=$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"\nSLICES=\"\"\nfor ARCH in $ARCHS; do\n  case \"$ARCH\" in\n    arm64) TRIPLE=aarch64-apple-darwin ;;\n    x86_64) TRIPLE=x86_64-apple-darwin ;;\n    *) continue ;;\n  esac\n  $CLEAN_ENV rustup target add \"$TRIPLE\" >/dev/null\n  $CLEAN_ENV cargo build --release --manifest-path \"$CORE/Cargo.toml\" -p braid-helper --target \"$TRIPLE\"\n  SLICES=\"$SLICES $CORE/target/$TRIPLE/release/braid-helper\"\ndone\nmkdir -p \"$(dirname \"$HELPER_OUT\")\"\nlipo -create $SLICES -output \"$HELPER_OUT\"\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$HELPER_OUT\"\n\n# libawg.dylib: universal из engines/awg-go/dist/darwin (make libawg, если ещё не собран).\nLIBAWG=\"$ROOT/engines/awg-go/dist/darwin/libawg.dylib\"\nif [ ! -f \"$LIBAWG\" ]; then\n  $CLEAN_ENV make -C \"$ROOT/engines/awg-go\" dist\nfi\nmkdir -p \"$FRAMEWORKS_OUT\"\ncp -f \"$LIBAWG\" \"$FRAMEWORKS_OUT/libawg.dylib\"\ninstall_name_tool -id @rpath/libawg.dylib \"$FRAMEWORKS_OUT/libawg.dylib\"\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$FRAMEWORKS_OUT/libawg.dylib\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
