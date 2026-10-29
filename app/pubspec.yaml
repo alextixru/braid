@@ -39,3 +39,7 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    # Копия ../THIRD_PARTY.md для экрана «О программе»; совпадение с оригиналом
+    # проверяет test/about_third_party_test.dart.
+    - assets/third_party.md

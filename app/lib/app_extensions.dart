@@ -1,12 +1,16 @@
 /// Точки подключения экранов тикета 11: «Движки», «Статистика» (только
-/// админ), «О программе», значок в меню-баре, диалог капчи. Пока слот пуст,
-/// пункта меню нет. Тикет 11 заполняет [kAppExtensions] — ровно здесь, больше
-/// ничего в тикете 10 править не нужно.
+/// админ), «О программе», значок в меню-баре, диалог капчи. Слоты заполнены в
+/// [kAppExtensions]; остальной код тикета 10 они не меняют.
 library;
 
 import 'dart:async';
 
 import 'package:braid/controller/braid_controller.dart';
+import 'package:braid/screens/about/about_screen.dart';
+import 'package:braid/screens/engines/engine_events_host.dart';
+import 'package:braid/screens/engines/engine_services.dart';
+import 'package:braid/screens/engines/engines_screen.dart';
+import 'package:braid/screens/stats/stats_screen.dart';
 import 'package:flutter/widgets.dart';
 
 class AppExtensions {
@@ -35,5 +39,13 @@ class AppExtensions {
   final FutureOr<void> Function(BraidController controller)? onReady;
 }
 
-/// Подключённые на сегодня надстройки. Тикет 11: впиши сюда свои экраны.
-const kAppExtensions = AppExtensions();
+/// Подключённые надстройки: экраны «Движки», «Статистика», «О программе»,
+/// диалог капчи поверх приложения и запуск значка в меню-баре, входа VK и
+/// проверки уведомлений, когда ядро готово.
+const kAppExtensions = AppExtensions(
+  engines: buildEnginesScreen,
+  stats: buildStatsScreen,
+  about: buildAboutScreen,
+  wrapApp: wrapWithEngineEvents,
+  onReady: startEngineServices,
+);
