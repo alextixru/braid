@@ -1,0 +1,37 @@
+# Сервер подписок и телеметрии Braid. Ставится deploy/install.sh в
+# /etc/systemd/system/braid-subd.service; бинарь — /usr/local/bin/braid-subd.
+[Unit]
+Description=Braid: сервер подписок и телеметрии (braid-subd)
+Documentation=https://github.com/alextixru/braid
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=braid-subd
+Group=braid-subd
+ExecStart=/usr/local/bin/braid-subd --config /etc/braid/subd.toml serve
+Restart=on-failure
+RestartSec=3s
+Environment=RUST_LOG=info
+
+# Порты ниже 1024 без root (по умолчанию 8443 — не нужно, но не мешает).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+
+# Писать можно только в каталог данных (telemetry/); конфиг и ключ — чтение.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/braid-subd
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+# Конфиг braid-subd — /etc/braid/subd.toml (ставится deploy/install.sh).
+# Пути — те, что создаёт install.sh; менять согласованно с юнитом systemd.
+
+# Адрес и порт HTTPS. Порт ниже 1024 разрешён юниту через CAP_NET_BIND_SERVICE.
+listen = "0.0.0.0:8443"
+
+# Каталог данных: sub/<token>.json (кладёт `braidctl publish`),
+# telemetry/<device>.jsonl (дописывает сервер).
+dir = "/var/lib/braid-subd"
+
+# Самоподписанный сертификат и ключ: `braid-subd gen-cert` создаёт и печатает
+# пин SPKI, который попадает в ссылки braid://. Перевыпуск ключа (--force)
+# меняет пин — все выданные ссылки устареют.
+cert = "/etc/braid/subd.crt"
+key = "/etc/braid/subd.key"
+
+# Файл с одной строкой: токен для POST /telemetry (журнал админа).
+admin_token_file = "/etc/braid/admin_token"

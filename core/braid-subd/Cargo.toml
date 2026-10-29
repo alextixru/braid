@@ -1,0 +1,41 @@
+[package]
+name = "braid-subd"
+description = "Сервер подписок и телеметрии Braid: HTTPS-раздача /sub/<token>.json, приём /telemetry, gen-cert с пином SPKI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "braid-subd"
+path = "src/main.rs"
+
+[dependencies]
+braid-proto.workspace = true
+
+tokio.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+base64.workspace = true
+sha2.workspace = true
+hex.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+# e2e: настоящий клиент подписки ядра против этого сервера на 127.0.0.1.
+braid-core.workspace = true
