@@ -13,6 +13,11 @@ APP  := app
 FFI  := app/rust
 AWG  := engines/awg-go
 FRB_VERSION := 2.12.0
+# Члены workspace ядра как список «-p имя». Только по ним идут fmt и clippy:
+# `cargo fmt --all` берёт и локальные path-зависимости (вендоренный
+# engines/csqtt-core), а форматировать вендоренный код нельзя.
+CORE_MEMBERS = $(shell cd $(CORE) && cargo metadata --no-deps --format-version 1 2>/dev/null \
+	| python3 -I -c 'import json,sys; print(" ".join("-p " + p["name"] for p in json.load(sys.stdin)["packages"]))')
 CROSS_TARGETS := x86_64-apple-darwin aarch64-linux-android x86_64-linux-android x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
 
 help: ## список целей
@@ -41,8 +46,9 @@ setup-go: ## зависимости Go-модуля libawg (когда он по
 
 check: check-rust check-cross check-go check-flutter ## полная проверка — то, что гоняет CI
 
-check-rust: ## fmt + clippy + тесты workspace ядра и крейта моста
-	cd $(CORE) && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+check-rust: ## fmt + clippy по членам workspace ядра, тесты ядра и крейта моста
+	@test -n "$(CORE_MEMBERS)" || { echo "cargo metadata не дал членов workspace в $(CORE)"; exit 1; }
+	cd $(CORE) && cargo fmt $(CORE_MEMBERS) --check && cargo clippy $(CORE_MEMBERS) --all-targets -- -D warnings && cargo test --workspace
 	cd $(FFI) && rustfmt --edition 2021 --check src/lib.rs src/api/*.rs \
 		&& CARGO_TARGET_DIR=../../$(CORE)/target cargo clippy --all-targets -- -D warnings \
 		&& CARGO_TARGET_DIR=../../$(CORE)/target cargo test
@@ -57,8 +63,9 @@ check-go: ## go vet + тесты libawg (когда модуль появитс�
 check-flutter: ## анализ и тесты приложения
 	cd $(APP) && flutter analyze && flutter test
 
-fmt: ## отформатировать Rust и Dart
-	cd $(CORE) && cargo fmt --all
+fmt: ## отформатировать Rust (только члены workspace) и Dart
+	@test -n "$(CORE_MEMBERS)" || { echo "cargo metadata не дал членов workspace в $(CORE)"; exit 1; }
+	cd $(CORE) && cargo fmt $(CORE_MEMBERS)
 	cd $(FFI) && rustfmt --edition 2021 src/lib.rs src/api/*.rs
 	cd $(APP) && dart format lib test
 
