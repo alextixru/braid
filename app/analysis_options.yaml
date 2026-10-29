@@ -1,0 +1,17 @@
+# Анализатор: рекомендованные линты Flutter. Платформенные каталоги и
+# vendored-инструментарий cargokit (отдельный Dart-пакет со своими
+# зависимостями) не анализируем — как в FOCSQ, иначе на свежей машине
+# десятки uri_does_not_exist.
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - windows/**
+    - macos/**
+    - linux/**
+    - rust_builder/cargokit/**
+
+linter:
+  rules:

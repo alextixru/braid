@@ -1,0 +1,18 @@
+[package]
+name = "braid_ffi"
+description = "Мост Flutter ↔ ядро Braid (flutter_rust_bridge); собирается cargokit'ом внутри flutter build"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.12.0"
+braid-core = { path = "../../core/braid-core" }
+braid-platform = { path = "../../core/braid-platform" }
+anyhow = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

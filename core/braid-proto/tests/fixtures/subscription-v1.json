@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "version": 7,
+  "updated_at": "2026-10-29T10:15:00Z",
+  "update_interval_hours": 6,
+  "host": { "id": "frankfurt", "name": "Франкфурт", "public_ip": "203.0.113.10" },
+  "user": { "name": "alex", "admin": true },
+  "engines": [
+    {
+      "type": "csqtt",
+      "id": "csqtt",
+      "priority": 2,
+      "peer": "203.0.113.10:3478",
+      "password": "synthetic-csqtt-password",
+      "workers": 4,
+      "obfs": "xor",
+      "fingerprint": "chrome"
+    },
+    {
+      "type": "other",
+      "id": "wg-next",
+      "priority": 3,
+      "kind": "xray",
+      "params": { "server": "203.0.113.10:443", "flow": "xtls-rprx-vision" }
+    },
+    {
+      "type": "awg",
+      "id": "awg",
+      "priority": 1,
+      "endpoint": "203.0.113.10:55424",
+      "client_ip": "10.8.1.5",
+      "gateway": "10.8.1.1",
+      "dns": ["10.8.1.1", "1.1.1.1"],
+      "mtu": 1376,
+      "private_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "peer_public_key": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+      "psk": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+      "awg": {
+        "jc": 4, "jmin": 10, "jmax": 50,
+        "s1": 15, "s2": 18, "s3": 20, "s4": 22,
+        "h1": "100000-200000", "h2": "2", "h3": 3, "h4": "4",
+        "i1": "<r 2><b 0x8580>", "i2": ""
+      },
+      "protocol_version": "2",
+      "persistent_keepalive": 25
+    }
+  ],
+  "rules": {
+    "sets": [
+      {
+        "id": "google",
+        "name": "Google",
+        "domains": ["google.com", "*.google.com", "*.*.googleapis.com"],
+        "ips": ["8.8.8.0/24", "142.250.0.0/15"],
+        "exclude_domains": ["mail.google.com"],
+        "exclude_ips": ["142.251.1.0/24"]
+      },
+      {
+        "id": "cursor",
+        "name": "Cursor",
+        "domains": ["cursor.com", "*.cursor.com"],
+        "ips": []
+      }
+    ],
+    "modes": [
+      {
+        "id": "work",
+        "name": "Работа",
+        "sets": ["google", "cursor"],
+        "exclude_domains": ["calendar.google.com"],
+        "exclude_ips": [],
+        "default": true
+      },
+      { "id": "home", "name": "Дом", "sets": ["google"], "default": false }
+    ]
+  },
+  "probe": { "dns": "10.8.1.1" },
+  "client": {
+    "latest": "0.2.0",
+    "downloads": {
+      "macos": "https://github.com/alextixru/braid/releases/download/v0.2.0/Braid.zip",
+      "android": "https://github.com/alextixru/braid/releases/download/v0.2.0/braid.apk"
+    }
+  },
+  "telemetry": { "url": "https://203.0.113.10:8443/telemetry", "token": "synthetic-admin-token" }
+}

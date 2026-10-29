@@ -1,0 +1,20 @@
+{
+  "modes": [
+    {
+      "id": "work",
+      "name": "Работа",
+      "sets": ["cursor", "anthropic", "notion", "google"],
+      "exclude_domains": [],
+      "exclude_ips": [],
+      "default": true
+    },
+    {
+      "id": "home",
+      "name": "Дом",
+      "sets": ["twitch", "google"],
+      "exclude_domains": [],
+      "exclude_ips": [],
+      "default": false
+    }
+  ]
+}

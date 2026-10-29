@@ -1,0 +1,57 @@
+# Проверка на каждый push и PR: `make check` — fmt, clippy и тесты Rust,
+# кросс-проверка заглушек платформ, go vet/test (когда появится libawg),
+# flutter analyze и тесты приложения. Сборки .app и APK — в build.yml.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Rust, Go, Flutter
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-gnu, aarch64-linux-android
+
+      - name: Кэш Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core
+            app/rust
+
+      - name: Go 1.27
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: false
+
+      - name: Flutter 3.47.7
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+
+      - name: Зависимости
+        run: make setup-targets setup-flutter setup-go
+
+      - name: make check
+        run: make check
