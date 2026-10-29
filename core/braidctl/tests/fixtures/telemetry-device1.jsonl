@@ -1,0 +1,10 @@
+{"ts":"2026-10-01T00:00:00Z","event":"connect","engine":"awg","network":"net-a"}
+{"ts":"2026-10-01T01:00:00Z","event":"disconnect","manual":true}
+{"ts":"2026-10-28T10:00:00Z","event":"connect","engine":"awg","network":"net-a"}
+{"ts":"2026-10-28T10:05:00Z","event":"probe","engine":"awg","rtt_ms":40,"lost":false}
+{"ts":"2026-10-28T10:10:00Z","event":"switch","from":"awg","to":"csqtt","reason":"dead","metrics":{"rtt_ms":null,"loss_pct":100,"handshake_age_s":200}}
+{"ts":"2026-10-28T10:15:00Z","event":"engine_error","engine":"awg","code":"handshake_timeout"}
+{"ts":"2026-10-28T10:20:00Z","event":"network","id":"net-b","kind":"wifi"}
+{"ts":"2026-10-28T10:30:00Z","event":"switch","from":"csqtt","to":"awg","reason":"priority","metrics":{"rtt_ms":35,"loss_pct":0,"handshake_age_s":5}}
+not json at all
+{"ts":"2026-10-28T10:40:00Z","event":"disconnect","manual":true}

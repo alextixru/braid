@@ -1,0 +1,3 @@
+{"ts":"2026-10-29T09:00:00Z","event":"connect","engine":"csqtt","network":"net-a"}
+{"ts":"2026-10-29T09:30:00Z","event":"switch","from":"csqtt","to":"awg","reason":"dead","metrics":{"loss_pct":80}}
+{"ts":"2026-10-29T10:00:00Z","event":"disconnect","manual":false}

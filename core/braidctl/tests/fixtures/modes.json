@@ -1,0 +1,13 @@
+{
+  "modes": [
+    {
+      "id": "work",
+      "name": "Работа",
+      "sets": ["cursor", "google"],
+      "exclude_domains": ["calendar.google.com"],
+      "exclude_ips": [],
+      "default": true
+    },
+    { "id": "home", "name": "Дом", "sets": ["google"], "default": false }
+  ]
+}

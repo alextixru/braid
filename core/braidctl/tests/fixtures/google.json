@@ -1,0 +1,8 @@
+{
+  "id": "google",
+  "name": "Google",
+  "domains": ["google.com", "*.google.com", "*.*.googleapis.com"],
+  "ips": ["8.8.8.0/24", "142.250.0.0/15"],
+  "exclude_domains": ["mail.google.com"],
+  "exclude_ips": ["142.251.1.0/24"]
+}
