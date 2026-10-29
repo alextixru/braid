@@ -1,6 +1,8 @@
-# Проверка на каждый push и PR: `make check` — fmt, clippy и тесты Rust,
-# кросс-проверка заглушек платформ, go vet/test (когда появится libawg),
-# flutter analyze и тесты приложения. Сборки .app и APK — в build.yml.
+# Проверка на каждый push и PR: `make check` — версия одна везде, fmt, clippy и
+# тесты Rust (ядро, мост, сквозной тест), кросс-проверка платформенного кода под
+# Linux/Windows/Android, go vet/test libawg, flutter analyze, dart format и тесты
+# приложения, тесты вендоренного csqtt-core. Сборки .app и APK — в build.yml;
+# он же вызывает этот workflow перед выпуском по тегу (workflow_call).
 name: check
 
 on:
@@ -8,10 +10,14 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,7 +26,7 @@ jobs:
   check:
     name: Rust, Go, Flutter
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -36,12 +42,13 @@ jobs:
           workspaces: |
             core
             app/rust
+            engines/csqtt-core
 
       - name: Go 1.27
         uses: actions/setup-go@v5
         with:
           go-version: '1.27'
-          cache: false
+          cache-dependency-path: engines/awg-go/go.sum
 
       - name: Flutter 3.47.7
         uses: subosito/flutter-action@v2

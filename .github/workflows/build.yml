@@ -1,0 +1,220 @@
+# Сборки приложения (тикет 12, G10): Braid.app — macOS universal с root-помощником
+# и libawg внутри, подпись ad-hoc, zip; APK — arm64-v8a и x86_64. На push в main
+# и вручную — артефакты прогона; по тегу v* — ещё и Release с обоими файлами.
+# Тег обязан совпадать с VERSION (`make check-tag`), выпуск идёт только после
+# зелёного `make check` (job check — вызов check.yml) и обеих сборок.
+#
+# Локально .app и APK не собираются (нет Xcode, Android SDK/NDK, JDK) — это
+# единственное место, где они появляются. Kotlin unit-тесты сервиса Android
+# тоже гоняются только здесь (`./gradlew :app:testDebugUnitTest`).
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FLUTTER_VERSION: '3.47.7'
+  GO_VERSION: '1.27'
+  # NDK, который Flutter 3.47 берёт по умолчанию (flutter.ndkVersion в build.gradle.kts):
+  # один и тот же для libawg.so, cargokit и Gradle.
+  ANDROID_NDK_VERSION: '28.2.13676358'
+
+jobs:
+  version:
+    name: Версия
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: VERSION = Cargo.toml = pubspec.yaml = Cargo.lock
+        run: make check-version
+
+      - name: Тег совпадает с VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: make check-tag TAG="$GITHUB_REF_NAME"
+
+  check:
+    name: Проверка
+    # На push в ветку тесты уже гоняет check.yml сам; здесь — для тега и ручного
+    # запуска, чтобы Release не вышел на красном.
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/check.yml
+
+  macos:
+    name: Braid.app (macOS universal)
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust stable (arm64 + x86_64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Кэш Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core
+            app/rust
+
+      - name: Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: engines/awg-go/go.sum
+
+      - name: Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Зависимости
+        run: make setup-flutter setup-go
+
+      # libawg (universal dylib) → помощник → .app: фаза Xcode «Embed braid-helper
+      # and libawg» кладёт их внутрь бандля, make подписывает ad-hoc, проверяет
+      # universal и упаковывает в dist/Braid-<VERSION>-macos-universal.zip.
+      - name: make libawg helper macos
+        run: make libawg helper macos
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: Braid-macos-universal
+          path: dist/Braid-*-macos-universal.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: APK (arm64-v8a, x86_64)
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android NDK ${{ env.ANDROID_NDK_VERSION }}
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Rust stable (цели Android)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Кэш Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core
+            app/rust
+
+      - name: Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: engines/awg-go/go.sum
+
+      - name: Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Зависимости
+        run: make setup-flutter setup-go
+
+      # settings.gradle.kts читает flutter.sdk из local.properties (файл вне git).
+      - name: local.properties
+        run: |
+          FLUTTER_SDK="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
+          printf 'flutter.sdk=%s\nsdk.dir=%s\n' "$FLUTTER_SDK" "$ANDROID_HOME" > app/android/local.properties
+
+      - name: libawg.so (arm64-v8a, x86_64)
+        run: make libawg-android
+
+      # 21 unit-тест Kotlin тикета 09 и ремонта (описание интерфейса, домен из
+      # share-меню, идентификатор сети, список приложений, вид уведомления).
+      - name: Kotlin unit-тесты сервиса
+        working-directory: app/android
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Отчёты тестов
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-unit-test-reports
+          path: app/android/app/build/reports/tests
+          if-no-files-found: ignore
+
+      # Ядро с настоящими движками под Android: C-зависимости csqtt-core требуют
+      # clang из NDK (те же переменные, что выставляет cargokit).
+      - name: cargo check braid-runtime под aarch64-linux-android
+        working-directory: core
+        run: |
+          BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          export CC_aarch64_linux_android="$BIN/aarch64-linux-android29-clang"
+          export CXX_aarch64_linux_android="$BIN/aarch64-linux-android29-clang++"
+          export AR_aarch64_linux_android="$BIN/llvm-ar"
+          export RANLIB_aarch64_linux_android="$BIN/llvm-ranlib"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$BIN/aarch64-linux-android29-clang"
+          cargo check -p braid-runtime --target aarch64-linux-android
+
+      - name: make apk
+        run: make apk
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: Braid-android
+          path: dist/Braid-*-android.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, check, macos, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Артефакты сборок
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release ${{ github.ref_name }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

@@ -28,3 +28,7 @@ tracing-android = "0.2"
 
 [dev-dependencies]
 serde_json.workspace = true
+# Сквозной тест (tests/e2e.rs, тикет 12): настоящий braid-subd в процессе на
+# 127.0.0.1 — библиотечная часть сервера и tokio для его рантайма.
+braid-subd = { path = "../braid-subd" }
+tokio.workspace = true
