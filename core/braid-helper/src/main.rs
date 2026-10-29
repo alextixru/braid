@@ -12,6 +12,7 @@
 mod cli {
     use anyhow::{Context, Result};
     use braid_helper::helper::{HelperOptions, cleanup_once, serve};
+    use braid_helper::policy;
     use braid_helper::system::{DryRunSystem, RealSystem, Scenario, System};
     use clap::{Parser, Subcommand};
     use std::os::unix::net::UnixStream;
@@ -26,10 +27,10 @@ mod cli {
     struct Cli {
         #[command(subcommand)]
         command: Command,
-        /// Файл состояния (по умолчанию /var/db/braid/helper-state.json).
-        #[arg(long, global = true)]
+        /// Файл состояния для dry-run; под root — всегда /var/db/braid/helper-state.json.
+        #[arg(long, global = true, requires = "dry_run")]
         state: Option<PathBuf>,
-        /// Печатать команды вместо выполнения; root не нужен.
+        /// Печатать команды вместо выполнения; только без root.
         #[arg(long, global = true)]
         dry_run: bool,
         /// Сценарий системы для dry-run (JSON).
@@ -52,8 +53,11 @@ mod cli {
         Cleanup,
     }
 
+    /// Под root (`policy`): ни dry-run, ни сценария, ни своего пути состояния —
+    /// `--state` и `--scenario` объявлены только вместе с `--dry-run`.
     fn build(cli: &Cli) -> Result<(Box<dyn System>, PathBuf)> {
         if cli.dry_run {
+            policy::check_dry_run(policy::real_euid())?;
             let scenario = match &cli.scenario {
                 Some(path) => Scenario::load(path)?,
                 None => Scenario::home_network(),
@@ -64,11 +68,10 @@ mod cli {
             });
             Ok((Box::new(DryRunSystem::new(scenario)), state))
         } else {
-            let state = cli
-                .state
-                .clone()
-                .unwrap_or_else(|| braid_platform::macos::default_state_path().to_path_buf());
-            Ok((Box::new(RealSystem::new()), state))
+            Ok((
+                Box::new(RealSystem::new()),
+                PathBuf::from(policy::REAL_STATE_PATH),
+            ))
         }
     }
 

@@ -61,6 +61,7 @@ pub struct MacosPlatform {
     use_launchctl: bool,
     notifications: bool,
     helper_path: PathBuf,
+    installed_helper_path: PathBuf,
     sudoers_path: PathBuf,
     state_path: PathBuf,
     helper_timeout: Duration,
@@ -88,6 +89,7 @@ impl MacosPlatform {
             .unwrap_or_else(std::env::temp_dir);
         Self {
             sudoers_path: launcher.sudoers_path().to_path_buf(),
+            installed_helper_path: launcher.installed().to_path_buf(),
             launcher: Box::new(launcher),
             socket_dir: home.join("Library/Application Support/Braid"),
             launch_agent_dir: home.join("Library/LaunchAgents"),
@@ -144,14 +146,33 @@ impl MacosPlatform {
         self
     }
 
+    /// Помощник из `.app`; пересобирает системный запуск — `with_launcher`
+    /// вызывать после этих трёх настроек.
     pub fn with_helper_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.helper_path = path.into();
+        self.rebuild_system_launcher();
+        self
+    }
+
+    /// Копия помощника в каталоге root, на которую ставится правило sudoers.
+    pub fn with_installed_helper_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.installed_helper_path = path.into();
+        self.rebuild_system_launcher();
         self
     }
 
     pub fn with_sudoers_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.sudoers_path = path.into();
+        self.rebuild_system_launcher();
         self
+    }
+
+    fn rebuild_system_launcher(&mut self) {
+        self.launcher = Box::new(
+            SystemLauncher::new(self.helper_path.clone())
+                .with_installed_path(self.installed_helper_path.clone())
+                .with_sudoers_path(self.sudoers_path.clone()),
+        );
     }
 
     pub fn with_state_path(mut self, path: impl Into<PathBuf>) -> Self {
@@ -184,9 +205,19 @@ impl MacosPlatform {
         self.state_path.exists()
     }
 
-    /// План установки правила sudoers (ист. 7): текст правила с дайджестом
-    /// текущего бинаря и команда установки. Ничего не ставит — выполнение
-    /// (`SudoersInstall::apply`) только по явному согласию пользователя.
+    /// Копия помощника в каталоге root стоит и совпадает с бинарём из `.app`;
+    /// `false` при стоящем правиле — приложение обновилось, правило пора
+    /// переустановить (до этого подключение идёт через диалог пароля).
+    pub fn helper_copy_current(&self) -> bool {
+        SystemLauncher::new(self.helper_path.clone())
+            .with_installed_path(self.installed_helper_path.clone())
+            .installed_copy_current()
+    }
+
+    /// План установки правила sudoers (ист. 7): копия помощника из `.app` в
+    /// каталог root, правило с дайджестом на эту копию, команда установки.
+    /// Ничего не ставит — выполнение (`SudoersInstall::apply`) только по
+    /// явному согласию пользователя.
     pub fn install_sudoers_rule(&self) -> Result<sudoers::SudoersInstall, PlatformError> {
         if !self.helper_path.is_file() {
             return Err(PlatformError::Helper(format!(
@@ -198,10 +229,12 @@ impl MacosPlatform {
         let user = std::env::var("USER")
             .map_err(|_| PlatformError::Io("переменная USER не задана".to_owned()))?;
         let digest = sudoers::file_digest(&self.helper_path)?;
-        Ok(sudoers::sudoers_install(
+        Ok(sudoers::sudoers_install_at(
             &user,
             &self.helper_path,
-            Some(&digest),
+            &self.installed_helper_path,
+            &self.sudoers_path,
+            &digest,
         ))
     }
 

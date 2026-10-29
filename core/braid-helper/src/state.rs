@@ -8,12 +8,12 @@
 //! откатывает по нему. Файл 0600 root в `/var/db/braid`: приложение видит
 //! только факт его существования.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use braid_proto::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::Ipv4Addr;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 pub const STATE_VERSION: u32 = 1;
@@ -76,25 +76,31 @@ impl HelperState {
             .with_context(|| format!("разбор {}", path.display()))
     }
 
-    /// Атомарная запись: временный файл рядом → rename. Каталог 0755, файл 0600.
+    /// Атомарная запись: временный файл рядом → rename. Пишет root, поэтому
+    /// каталог должен принадлежать нам и быть закрыт для чужой записи
+    /// (0755 root для `/var/db/braid`), а временный файл создаётся
+    /// `create_new` (`O_EXCL`): подложенная символическая ссылка не
+    /// разыменовывается — ревью тикета 08.
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent()
-            && !dir.is_dir()
-        {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o755)
-                .create(dir)
-                .with_context(|| format!("каталог {}", dir.display()))?;
-        }
+        let dir = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => bail!("у пути состояния {} нет каталога", path.display()),
+        };
+        ensure_private_dir(dir)?;
         let temp = path.with_extension("json.tmp");
+        // Хвост прерванной записи. В проверенном каталоге все записи — наши,
+        // а unlink ссылку не разыменовывает.
+        match std::fs::remove_file(&temp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("уборка {}", temp.display())),
+        }
         let text = serde_json::to_string_pretty(self)?;
         {
             use std::io::Write;
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .mode(0o600)
                 .open(&temp)
                 .with_context(|| format!("запись {}", temp.display()))?;
@@ -108,4 +114,42 @@ impl HelperState {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(path.with_extension("json.tmp"));
     }
+}
+
+/// Каталог состояния: создаётся 0755, если его нет; существующий — не
+/// символическая ссылка, принадлежит нашему euid и закрыт для записи
+/// группе и остальным.
+fn ensure_private_dir(dir: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(dir).is_err() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o755)
+            .create(dir)
+            .with_context(|| format!("каталог {}", dir.display()))?;
+    }
+    let meta =
+        std::fs::symlink_metadata(dir).with_context(|| format!("каталог {}", dir.display()))?;
+    if meta.file_type().is_symlink() {
+        bail!("каталог состояния {} — символическая ссылка", dir.display());
+    }
+    if !meta.is_dir() {
+        bail!("{} — не каталог", dir.display());
+    }
+    // SAFETY: geteuid без предусловий.
+    let euid = unsafe { libc::geteuid() };
+    if meta.uid() != euid {
+        bail!(
+            "каталог состояния {} принадлежит uid {}, а не {euid}",
+            dir.display(),
+            meta.uid()
+        );
+    }
+    if meta.mode() & 0o022 != 0 {
+        bail!(
+            "каталог состояния {} доступен на запись другим (режим {:o})",
+            dir.display(),
+            meta.mode() & 0o7777
+        );
+    }
+    Ok(())
 }

@@ -1,8 +1,16 @@
 //! Запуск root-помощника (ист. 7): напрямую, если приложение уже root (CLI
-//! под sudo); `sudo -n` по правилу `/etc/sudoers.d/braid`; иначе `osascript …
-//! with administrator privileges` — системный диалог пароля при каждом
-//! подключении. Порядок и цитирование — из `tun_darwin.rs` FOCSQ.
+//! под sudo); `sudo -n` по правилу `/etc/sudoers.d/braid` — но только копии
+//! помощника из каталога root и только пока она совпадает с бинарём в
+//! `.app`; иначе `osascript … with administrator privileges` — системный
+//! диалог пароля. Порядок и цитирование — из `tun_darwin.rs` FOCSQ.
+//!
+//! Бинарь внутри `.app` лежит в каталоге пользователя: NOPASSWD-правило на
+//! него позволило бы подменить файл между проверкой дайджеста и `execve`
+//! (ревью тикета 08), поэтому по sudo запускается только
+//! [`INSTALLED_HELPER_PATH`], а `$BRAID_HELPER` действует лишь в отладочных
+//! сборках.
 
+use super::sudoers::file_digest;
 use crate::platform::PlatformError;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -13,10 +21,14 @@ use std::time::{Duration, Instant};
 /// (`Contents/MacOS` в `.app`, `target/release` в разработке).
 pub const HELPER_NAME: &str = "braid-helper";
 
+/// Копия помощника в каталоге root (root:wheel 0755) — единственное, что
+/// запускается по правилу sudoers.
+pub const INSTALLED_HELPER_PATH: &str = "/Library/PrivilegedHelperTools/braid-helper";
+
 /// Правило sudoers, при котором помощник стартует без диалога.
 pub const SUDOERS_PATH: &str = "/etc/sudoers.d/braid";
 
-/// Переменная окружения с явным путём к помощнику (отладка без `.app`).
+/// Переменная окружения с явным путём к помощнику — только отладочные сборки.
 pub const HELPER_ENV: &str = "BRAID_HELPER";
 
 /// Кто запускает помощника. Подменяется в тестах бинарём с `--dry-run`.
@@ -43,14 +55,51 @@ pub enum LaunchMethod {
     Osascript,
 }
 
-pub fn choose_launch_method(euid: u32, sudoers_rule_exists: bool) -> LaunchMethod {
+/// `sudo_ready` — правило стоит и копия в каталоге root совпадает с `.app`.
+pub fn choose_launch_method(euid: u32, sudo_ready: bool) -> LaunchMethod {
     if euid == 0 {
         LaunchMethod::Direct
-    } else if sudoers_rule_exists {
+    } else if sudo_ready {
         LaunchMethod::Sudo
     } else {
         LaunchMethod::Osascript
     }
+}
+
+/// Готовая к выполнению команда запуска.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchPlan {
+    /// Бинарь из `.app` напрямую (мы уже root).
+    Direct(Vec<String>),
+    /// `sudo -n` копии из каталога root.
+    Sudo(Vec<String>),
+    /// `osascript -e` с бинарём из `.app` и диалогом пароля.
+    Osascript(String),
+}
+
+impl LaunchPlan {
+    pub fn method(&self) -> LaunchMethod {
+        match self {
+            Self::Direct(_) => LaunchMethod::Direct,
+            Self::Sudo(_) => LaunchMethod::Sudo,
+            Self::Osascript(_) => LaunchMethod::Osascript,
+        }
+    }
+}
+
+/// Путь к помощнику: `$BRAID_HELPER` только в отладочной сборке, иначе
+/// рядом с исполняемым файлом приложения. В релизе окружение не влияет ни
+/// на запуск, ни на правило.
+pub fn helper_path_from(
+    env_override: Option<PathBuf>,
+    exe: Option<PathBuf>,
+    debug_build: bool,
+) -> PathBuf {
+    if debug_build && let Some(path) = env_override {
+        return path;
+    }
+    exe.map(|exe| exe.with_file_name(HELPER_NAME))
+        .unwrap_or_else(|| PathBuf::from(HELPER_NAME))
 }
 
 /// Аргументы помощника в режиме обслуживания сокета.
@@ -122,19 +171,27 @@ pub fn run_with_administrator_privileges(script: &str) -> Result<(), PlatformErr
     }
 }
 
-/// Настоящий запуск: путь к помощнику и правило sudoers.
+/// Настоящий запуск: помощник из `.app`, его копия в каталоге root и
+/// правило sudoers.
 #[derive(Debug, Clone)]
 pub struct SystemLauncher {
-    helper: PathBuf,
+    bundled: PathBuf,
+    installed: PathBuf,
     sudoers: PathBuf,
 }
 
 impl SystemLauncher {
-    pub fn new(helper: impl Into<PathBuf>) -> Self {
+    pub fn new(bundled: impl Into<PathBuf>) -> Self {
         Self {
-            helper: helper.into(),
+            bundled: bundled.into(),
+            installed: PathBuf::from(INSTALLED_HELPER_PATH),
             sudoers: PathBuf::from(SUDOERS_PATH),
         }
+    }
+
+    pub fn with_installed_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.installed = path.into();
+        self
     }
 
     pub fn with_sudoers_path(mut self, path: impl Into<PathBuf>) -> Self {
@@ -142,27 +199,56 @@ impl SystemLauncher {
         self
     }
 
-    pub fn helper(&self) -> &Path {
-        &self.helper
+    /// Помощник из `.app` — для диалога пароля и как эталон копии.
+    pub fn bundled(&self) -> &Path {
+        &self.bundled
+    }
+
+    pub fn installed(&self) -> &Path {
+        &self.installed
     }
 
     pub fn sudoers_path(&self) -> &Path {
         &self.sudoers
     }
 
-    /// `$BRAID_HELPER`, иначе рядом с исполняемым файлом приложения.
+    /// Рядом с исполняемым файлом приложения; `$BRAID_HELPER` — только в
+    /// отладочной сборке.
     pub fn default_helper_path() -> PathBuf {
-        if let Some(path) = std::env::var_os(HELPER_ENV) {
-            return path.into();
-        }
-        std::env::current_exe()
-            .map(|exe| exe.with_file_name(HELPER_NAME))
-            .unwrap_or_else(|_| PathBuf::from(HELPER_NAME))
+        helper_path_from(
+            std::env::var_os(HELPER_ENV).map(PathBuf::from),
+            std::env::current_exe().ok(),
+            cfg!(debug_assertions),
+        )
     }
 
-    pub fn method(&self) -> LaunchMethod {
+    /// Копия в каталоге root стоит и побайтно совпадает с помощником из `.app`.
+    pub fn installed_copy_current(&self) -> bool {
+        if !self.installed.is_file() || !self.bundled.is_file() {
+            return false;
+        }
+        match (file_digest(&self.installed), file_digest(&self.bundled)) {
+            (Ok(installed), Ok(bundled)) => installed == bundled,
+            _ => false,
+        }
+    }
+
+    /// Что именно будет запущено — без выполнения.
+    pub fn plan(&self, socket: &Path, uid: u32) -> LaunchPlan {
         // SAFETY: geteuid не имеет предусловий.
-        choose_launch_method(unsafe { libc::geteuid() }, self.sudoers.is_file())
+        let euid = unsafe { libc::geteuid() };
+        let sudo_ready = self.sudoers.is_file() && self.installed_copy_current();
+        match choose_launch_method(euid, sudo_ready) {
+            LaunchMethod::Direct => {
+                let mut command = vec![self.bundled.to_string_lossy().into_owned()];
+                command.extend(helper_args(socket, uid));
+                LaunchPlan::Direct(command)
+            }
+            LaunchMethod::Sudo => LaunchPlan::Sudo(sudo_command(&self.installed, socket, uid)),
+            LaunchMethod::Osascript => {
+                LaunchPlan::Osascript(osascript_script(&self.bundled, socket, uid))
+            }
+        }
     }
 
     fn spawn(command: &[String]) -> Result<Child, PlatformError> {
@@ -181,21 +267,17 @@ impl SystemLauncher {
 
 impl HelperLauncher for SystemLauncher {
     fn launch(&self, socket: &Path, uid: u32) -> Result<Option<Child>, PlatformError> {
-        if !self.helper.is_file() {
+        if !self.bundled.is_file() {
             return Err(PlatformError::Helper(format!(
                 "{HELPER_NAME} не найден: {}",
-                self.helper.display()
+                self.bundled.display()
             )));
         }
-        match self.method() {
-            LaunchMethod::Direct => {
-                let mut command = vec![self.helper.to_string_lossy().into_owned()];
-                command.extend(helper_args(socket, uid));
-                Self::spawn(&command).map(Some)
-            }
-            LaunchMethod::Sudo => {
-                tracing::info!("помощник запускается через sudo (правило sudoers)");
-                let mut child = Self::spawn(&sudo_command(&self.helper, socket, uid))?;
+        match self.plan(socket, uid) {
+            LaunchPlan::Direct(command) => Self::spawn(&command).map(Some),
+            LaunchPlan::Sudo(command) => {
+                tracing::info!("помощник запускается через sudo (копия в каталоге root)");
+                let mut child = Self::spawn(&command)?;
                 // `sudo -n` при несовпавшем дайджесте или снятом правиле
                 // выходит сразу с ошибкой — тогда остаётся диалог пароля.
                 let deadline = Instant::now() + Duration::from_millis(500);
@@ -206,7 +288,7 @@ impl HelperLauncher for SystemLauncher {
                                 "sudo -n отказал ({status}) — запрашиваем права через osascript"
                             );
                             return run_with_administrator_privileges(&osascript_script(
-                                &self.helper,
+                                &self.bundled,
                                 socket,
                                 uid,
                             ))
@@ -219,10 +301,9 @@ impl HelperLauncher for SystemLauncher {
                 }
                 Ok(Some(child))
             }
-            LaunchMethod::Osascript => {
+            LaunchPlan::Osascript(script) => {
                 tracing::info!("запрос прав администратора для настройки туннеля");
-                run_with_administrator_privileges(&osascript_script(&self.helper, socket, uid))
-                    .map(|()| None)
+                run_with_administrator_privileges(&script).map(|()| None)
             }
         }
     }

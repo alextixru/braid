@@ -27,6 +27,8 @@ pub mod dns;
 #[cfg(target_os = "macos")]
 pub mod helper;
 #[cfg(target_os = "macos")]
+pub mod policy;
+#[cfg(target_os = "macos")]
 pub mod routes;
 #[cfg(target_os = "macos")]
 pub mod state;

@@ -5,6 +5,52 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Ревью тикета 08: под root помощник не принимает `--state`/`--scenario`/
+/// `--dry-run` — путь состояния только `/var/db/braid/helper-state.json`.
+/// `--state` и `--scenario` существуют лишь вместе с `--dry-run`, а `--dry-run`
+/// под euid 0 отвергается ([`braid_helper::policy::check_dry_run`]).
+#[test]
+fn state_and_scenario_exist_only_with_dry_run() {
+    let state = temp_state("flag");
+    for args in [
+        vec!["cleanup", "--state", state.to_str().unwrap()],
+        vec!["cleanup", "--scenario", "/tmp/x.json"],
+        vec![
+            "serve",
+            "--sock",
+            "/tmp/x.sock",
+            "--uid",
+            "501",
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_braid-helper"))
+            .args(&args)
+            .output()
+            .expect("бинарь помощника");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: ожидалась ошибка разбора аргументов, вывод: {stderr}"
+        );
+        assert!(stderr.contains("--dry-run"), "{args:?}: {stderr}");
+    }
+    assert!(!state.exists());
+}
+
+#[test]
+fn dry_run_is_refused_under_root() {
+    let error = braid_helper::policy::check_dry_run(0).expect_err("root не получает dry-run");
+    assert!(format!("{error:#}").contains("root"), "{error:#}");
+    assert!(braid_helper::policy::check_dry_run(501).is_ok());
+    assert_eq!(
+        braid_helper::policy::REAL_STATE_PATH,
+        "/var/db/braid/helper-state.json"
+    );
+}
+
 fn temp_state(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "braid-helper-cli-{name}-{}-{}.json",

@@ -7,10 +7,11 @@ use braid_platform::Platform;
 use braid_platform::macos::MacosPlatform;
 use braid_platform::macos::autostart::launch_agent_plist;
 use braid_platform::macos::launch::{
-    LaunchMethod, choose_launch_method, osascript_script, sudo_command,
+    LaunchMethod, LaunchPlan, SystemLauncher, choose_launch_method, helper_path_from,
+    osascript_script, sudo_command,
 };
 use braid_platform::macos::network::{NetworkProbe, dns_servers_from, network_identity};
-use braid_platform::macos::sudoers::sudoers_install;
+use braid_platform::macos::sudoers::{sudoers_install, sudoers_install_at};
 use braid_proto::NetworkKind;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -29,38 +30,151 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Ревью тикета 08: NOPASSWD-правило не может указывать на бинарь в `.app`
+/// пользователя (подмена файла между проверкой дайджеста и execve) —
+/// правило ставится на копию в каталоге root, туда же бинарь копирует та
+/// же команда установки, и оттуда идёт запуск по sudo.
 #[test]
-fn sudoers_rule_pins_helper_by_digest_and_installs_through_visudo() {
+fn sudoers_rule_points_to_root_owned_copy_not_the_bundle() {
     let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    let plan = sudoers_install(
-        "alex",
-        Path::new("/Applications/Braid.app/Contents/MacOS/braid-helper"),
-        Some(digest),
-    );
+    let bundled = Path::new("/Applications/Braid.app/Contents/MacOS/braid-helper");
+    let plan = sudoers_install("alex", bundled, digest);
     assert_eq!(plan.path, Path::new("/etc/sudoers.d/braid"));
+    assert_eq!(
+        plan.installed_helper,
+        Path::new("/Library/PrivilegedHelperTools/braid-helper")
+    );
     assert!(
         plan.rule.lines().any(|line| line
             == format!(
-                "alex ALL=(root) NOPASSWD: sha256:{digest} /Applications/Braid.app/Contents/MacOS/braid-helper"
+                "alex ALL=(root) NOPASSWD: sha256:{digest} /Library/PrivilegedHelperTools/braid-helper"
             )),
         "правило: {}",
         plan.rule
     );
-    // Без дайджеста — просто путь; пробелы в пути экранируются по правилам sudoers.
-    let plain = sudoers_install("alex", Path::new("/Users/alex/My Apps/braid-helper"), None);
     assert!(
-        plain
-            .rule
-            .contains("alex ALL=(root) NOPASSWD: /Users/alex/My\\ Apps/braid-helper"),
-        "{}",
-        plain.rule
+        !plan.rule.contains("/Applications"),
+        "правило не ссылается на каталог пользователя: {}",
+        plan.rule
     );
-    // Установка: временный файл → visudo -cf → 0440 → mv на место. Никакого sudo здесь нет.
-    assert!(plan.shell_command.contains("/usr/sbin/visudo -cf"));
-    assert!(plan.shell_command.contains("chmod 0440"));
-    assert!(plan.shell_command.ends_with("/etc/sudoers.d/braid"));
+    // Установка одной командой от root: копия → сверка дайджеста → root:wheel 0755
+    // → на место → правило через visudo -cf → 0440. Порядок важен.
+    let cmd = &plan.shell_command;
+    let copy_at = cmd
+        .find("/bin/cp -f '/Applications/Braid.app/Contents/MacOS/braid-helper' '/Library/PrivilegedHelperTools/braid-helper.tmp'")
+        .expect("копирование бинаря в каталог root");
+    let digest_at = cmd
+        .find("/usr/bin/shasum -a 256")
+        .expect("сверка дайджеста копии");
+    assert!(cmd[digest_at..].contains(digest));
+    let chown_at = cmd
+        .find("/usr/sbin/chown root:wheel '/Library/PrivilegedHelperTools/braid-helper.tmp'")
+        .expect("копия принадлежит root");
+    let chmod_at = cmd
+        .find("/bin/chmod 0755 '/Library/PrivilegedHelperTools/braid-helper.tmp'")
+        .expect("копия без записи для пользователя");
+    let visudo_at = cmd.find("/usr/sbin/visudo -cf").expect("проверка правила");
+    assert!(copy_at < digest_at && digest_at < chown_at && chown_at < chmod_at);
+    assert!(
+        chmod_at < visudo_at,
+        "правило пишется после установки копии"
+    );
+    assert!(cmd.contains("/bin/chmod 0440"));
+    assert!(cmd.ends_with("/etc/sudoers.d/braid"));
     assert!(plan.osascript.starts_with("do shell script \""));
     assert!(plan.osascript.ends_with("\" with administrator privileges"));
+
+    // Пробел в пути копии экранируется по правилам sudoers.
+    let custom = sudoers_install_at(
+        "alex",
+        bundled,
+        Path::new("/Library/Privileged Tools/braid-helper"),
+        Path::new("/etc/sudoers.d/braid"),
+        digest,
+    );
+    assert!(
+        custom.rule.contains(&format!(
+            "NOPASSWD: sha256:{digest} /Library/Privileged\\ Tools/braid-helper"
+        )),
+        "{}",
+        custom.rule
+    );
+}
+
+/// Запуск по sudo — только копия из каталога root и только пока она
+/// совпадает с помощником в `.app`; иначе диалог пароля с бинарём из `.app`.
+#[test]
+fn launch_plan_uses_root_copy_for_sudo_and_bundle_for_the_dialog() {
+    let dir = temp_dir("plan");
+    let bundled = dir.join("Braid.app/Contents/MacOS/braid-helper");
+    std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+    std::fs::write(&bundled, b"helper v1").unwrap();
+    let installed = dir.join("PrivilegedHelperTools/braid-helper");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::write(&installed, b"helper v1").unwrap();
+    let rule = dir.join("sudoers.d/braid");
+    std::fs::create_dir_all(rule.parent().unwrap()).unwrap();
+    std::fs::write(&rule, "rule").unwrap();
+    let socket = Path::new("/tmp/h.sock");
+    let launcher = SystemLauncher::new(&bundled)
+        .with_installed_path(&installed)
+        .with_sudoers_path(&rule);
+
+    match launcher.plan(socket, 501) {
+        LaunchPlan::Sudo(command) => {
+            assert_eq!(command[0], "/usr/bin/sudo");
+            assert_eq!(command[3], installed.to_string_lossy());
+            assert!(
+                !command.iter().any(|arg| arg.contains("Braid.app")),
+                "sudo не запускает бинарь из .app: {command:?}"
+            );
+        }
+        other => panic!("ожидался запуск по sudo, получили {other:?}"),
+    }
+
+    // Приложение обновилось, копия отстала — без sudo, диалог с бинарём из .app.
+    std::fs::write(&installed, b"helper v0").unwrap();
+    match launcher.plan(socket, 501) {
+        LaunchPlan::Osascript(script) => {
+            assert!(
+                script.contains(&format!("'{}'", bundled.display())),
+                "{script}"
+            );
+            assert!(!script.contains("PrivilegedHelperTools"), "{script}");
+        }
+        other => panic!("ожидался диалог пароля, получили {other:?}"),
+    }
+
+    // Правила нет — тоже диалог.
+    std::fs::remove_file(&rule).unwrap();
+    assert!(matches!(
+        launcher.plan(socket, 501),
+        LaunchPlan::Osascript(_)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `BRAID_HELPER` — только для отладочных сборок; в релизе путь помощника
+/// всегда рядом с исполняемым файлом приложения.
+#[test]
+fn helper_env_override_only_in_debug_builds() {
+    let exe = PathBuf::from("/Applications/Braid.app/Contents/MacOS/Braid");
+    assert_eq!(
+        helper_path_from(Some(PathBuf::from("/tmp/evil")), Some(exe.clone()), false),
+        Path::new("/Applications/Braid.app/Contents/MacOS/braid-helper")
+    );
+    assert_eq!(
+        helper_path_from(
+            Some(PathBuf::from("/tmp/dev-helper")),
+            Some(exe.clone()),
+            true
+        ),
+        Path::new("/tmp/dev-helper")
+    );
+    assert_eq!(
+        helper_path_from(None, Some(exe), true),
+        Path::new("/Applications/Braid.app/Contents/MacOS/braid-helper")
+    );
 }
 
 #[test]
