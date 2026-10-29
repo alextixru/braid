@@ -10,11 +10,16 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 /// Команда для хоста: выполняется как `sh -c '<script>'` (с `sudo -n`, если `sudo`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Скрипт попадает в argv `ssh` и `sh -c` — он виден в `ps` и в журнале sudo, —
+/// поэтому секреты (токены, пароли, ключи) в нём не бывают: только в `stdin`.
+/// `Debug` значения `stdin` и `args` не печатает.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Cmd {
     /// `user@host` из `state/hosts/<id>.toml`.
     pub target: String,
@@ -28,6 +33,22 @@ pub struct Cmd {
     pub args: BTreeMap<&'static str, String>,
     /// Выполнять через `sudo -n`.
     pub sudo: bool,
+}
+
+impl fmt::Debug for Cmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cmd")
+            .field("target", &self.target)
+            .field("step", &self.step)
+            .field("script", &self.script)
+            .field(
+                "stdin",
+                &self.stdin.as_ref().map(|d| format!("[{} байт]", d.len())),
+            )
+            .field("args", &self.args.keys().collect::<Vec<_>>())
+            .field("sudo", &self.sudo)
+            .finish()
+    }
 }
 
 impl Cmd {

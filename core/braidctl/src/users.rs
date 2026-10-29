@@ -143,21 +143,34 @@ fn provision(
                 psk: psk.clone(),
                 client_ip: Some(*client_ip),
             });
-            env.state.save_imported_awg(&host_id, &name, spec)?;
+            if !env.shell.is_dry_run() {
+                env.state.save_imported_awg(&host_id, &name, spec)?;
+            }
             user.imported = true;
         }
     }
-    env.state.save_user_secrets(&host_id, &name, &secrets)?;
-    env.state.save_user(user)?;
+    let dry = env.shell.is_dry_run();
+    if !dry {
+        env.state.save_user_secrets(&host_id, &name, &secrets)?;
+        env.state.save_user(user)?;
+    }
 
     // 2. Пир AWG на хосте (только для выпущенного ключа).
     if let (AwgSource::Issue, Some(awg_host)) = (&source, &host.awg) {
         let s = secrets.awg.as_mut().context("ключи AWG")?;
         let pubkey = s.public_key.to_base64();
         let out = run_checked(env.shell, &awg::read_cmd(host, awg_host))?;
-        let server = awg::parse_read(&out.stdout)?;
-        let used = server.conf.used_ips();
-        let ip: Ipv4Addr = match server.conf.peer(&pubkey) {
+        // В dry-run хост молчит — план строится без конфига.
+        let server = match awg::parse_read(&out.stdout) {
+            Ok(server) => Some(server),
+            Err(_) if dry => None,
+            Err(e) => return Err(e),
+        };
+        let used = server
+            .as_ref()
+            .map(|srv| srv.conf.used_ips())
+            .unwrap_or_default();
+        let ip: Ipv4Addr = match server.as_ref().and_then(|srv| srv.conf.peer(&pubkey)) {
             Some(peer) => peer
                 .allowed_ips
                 .first()
@@ -172,14 +185,19 @@ fn provision(
         };
         if s.client_ip != Some(ip) {
             s.client_ip = Some(ip);
-            env.state.save_user_secrets(&host_id, &name, &secrets)?;
+            if !dry {
+                env.state.save_user_secrets(&host_id, &name, &secrets)?;
+            }
         }
         let s = secrets.awg.as_ref().context("ключи AWG")?;
-        if !server.conf.has_peer(&pubkey) {
+        if !server
+            .as_ref()
+            .is_some_and(|srv| srv.conf.has_peer(&pubkey))
+        {
             let psk = if awg_host.shared_psk {
                 server
-                    .shared_psk
-                    .clone()
+                    .as_ref()
+                    .and_then(|srv| srv.shared_psk.clone())
                     .or_else(|| ctx.host_secrets.awg_shared_psk.clone())
             } else {
                 s.psk.clone()
@@ -197,7 +215,7 @@ fn provision(
                     },
                 ),
             )?;
-            if !out.stdout.contains("BRAID_PEER=") && !env.shell.is_dry_run() {
+            if !out.stdout.contains("BRAID_PEER=") && !dry {
                 bail!("хост не подтвердил добавление пира: {}", out.stdout.trim());
             }
         }
@@ -222,12 +240,20 @@ fn provision(
             .is_some_and(|s| clients.iter().any(|cl| cl.password == s.password));
         if !present {
             let out = run_checked(env.shell, &csqtt::create_cmd(host, c, &name))?;
-            if !env.shell.is_dry_run() {
+            if !dry {
                 let password = csqtt::parse_created(&out.stdout)?;
                 secrets.csqtt = Some(CsqttSecrets { password });
                 env.state.save_user_secrets(&host_id, &name, &secrets)?;
             }
         }
+    }
+
+    if dry {
+        writeln!(
+            env.out,
+            "dry-run: локальные файлы не записаны, подписка и ссылка не собраны"
+        )?;
+        return Ok(());
     }
 
     // 4. Подписка на хост.
@@ -237,13 +263,11 @@ fn provision(
     let token = secrets.token.clone().context("токен")?;
     let link = BraidLink::new(subd_url, token, pin).encode();
     let png = env.state.qr_png_path(&host_id, &name);
-    if !env.shell.is_dry_run() {
-        qr::png(&link, &png, 8)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&png, std::fs::Permissions::from_mode(0o600))?;
-        }
+    qr::png(&link, &png, 8)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&png, std::fs::Permissions::from_mode(0o600))?;
     }
     writeln!(
         env.out,
@@ -270,50 +294,75 @@ pub fn revoke(env: &mut Env<'_>, name: &str) -> anyhow::Result<()> {
         .with_context(|| format!("пользователь «{name}» не найден"))?;
     let host = env.state.load_host(&user.host)?;
     let secrets = env.state.load_user_secrets(&user.host, name)?;
+    let dry = env.shell.is_dry_run();
     let mut done = Vec::new();
 
+    // Пир AWG снимается и у ключа из Amnezia: публичный ключ известен, пир — в
+    // конфиге хоста, иначе доступ по ключу остался бы.
     if let (Some(awg_host), Some(s)) = (&host.awg, &secrets.awg) {
-        if user.imported {
-            done.push("пир AWG из ключа Amnezia не снят — им владеет Amnezia".to_owned());
-        } else {
-            let pubkey = s.public_key.to_base64();
-            let out = run_checked(env.shell, &awg::read_cmd(&host, awg_host))?;
-            let server = awg::parse_read(&out.stdout)?;
-            let (new_conf, removed) = awg::without_peer(&server.conf_text, &pubkey);
-            if removed {
-                run_checked(
-                    env.shell,
-                    &awg::remove_peer_cmd(&host, awg_host, &new_conf, &pubkey),
-                )?;
-                done.push("пир AWG снят".to_owned());
-            } else {
-                done.push("пира AWG на хосте уже нет".to_owned());
-            }
-            if awg_host.kind == AwgKind::AmneziaDocker {
-                let table = run_checked(env.shell, &awg::clients_read_cmd(&host, awg_host))?.stdout;
-                if table.contains(&pubkey) {
-                    let updated = awg::clients_table_remove(&table, &pubkey);
+        let pubkey = s.public_key.to_base64();
+        let out = run_checked(env.shell, &awg::read_cmd(&host, awg_host))?;
+        let server = match awg::parse_read(&out.stdout) {
+            Ok(server) => Some(server),
+            Err(_) if dry => None,
+            Err(e) => return Err(e),
+        };
+        match server {
+            Some(server) => {
+                let (new_conf, removed) = awg::without_peer(&server.conf_text, &pubkey);
+                if removed {
                     run_checked(
                         env.shell,
-                        &awg::clients_write_cmd(&host, awg_host, &updated),
+                        &awg::remove_peer_cmd(&host, awg_host, &new_conf, &pubkey),
                     )?;
+                    done.push("пир AWG снят".to_owned());
+                } else {
+                    done.push("пира AWG на хосте уже нет".to_owned());
                 }
+            }
+            None => {
+                run_checked(
+                    env.shell,
+                    &awg::remove_peer_cmd(&host, awg_host, "", &pubkey),
+                )?;
+                done.push("план: снять пир AWG".to_owned());
+            }
+        }
+        if awg_host.kind == AwgKind::AmneziaDocker {
+            let table = run_checked(env.shell, &awg::clients_read_cmd(&host, awg_host))?.stdout;
+            if table.contains(&pubkey) || dry {
+                let updated = awg::clients_table_remove(&table, &pubkey);
+                run_checked(
+                    env.shell,
+                    &awg::clients_write_cmd(&host, awg_host, &updated),
+                )?;
             }
         }
     }
+    // Профиль CSQTT: локальные записи стираются только после 200 или 404 панели;
+    // любая другая ошибка оставляет всё как есть — пароль на сервере ещё жив.
     if let (Some(c), Some(s)) = (&host.csqtt, &secrets.csqtt) {
-        let out = env.shell.run(&csqtt::delete_cmd(&host, c, &s.password)?)?;
-        done.push(if out.ok() {
-            "профиль CSQTT удалён".to_owned()
+        let out = run_checked(env.shell, &csqtt::delete_cmd(&host, c, &s.password)?).context(
+            "профиль CSQTT не удалён — панель недоступна; локальные записи сохранены, повтори revoke",
+        )?;
+        if dry {
+            done.push("план: удалить профиль CSQTT".to_owned());
         } else {
-            "профиля CSQTT на хосте уже нет".to_owned()
-        });
+            match csqtt::parse_delete(&out.stdout)
+                .context("профиль CSQTT не удалён; локальные записи сохранены, повтори revoke")?
+            {
+                csqtt::DeleteOutcome::Deleted => done.push("профиль CSQTT удалён".to_owned()),
+                csqtt::DeleteOutcome::Absent => {
+                    done.push("профиля CSQTT на хосте уже нет".to_owned())
+                }
+            }
+        }
     }
     if let (Some(subd_section), Some(token)) = (&host.subd, &secrets.token) {
         run_checked(env.shell, &subd::remove_cmd(&host, subd_section, token)?)?;
         done.push("файл подписки удалён — клиент увидит «Доступ отозван»".to_owned());
     }
-    if env.shell.is_dry_run() {
+    if dry {
         writeln!(env.out, "dry-run: локальные записи не удалены")?;
         return Ok(());
     }

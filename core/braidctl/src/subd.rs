@@ -97,28 +97,32 @@ pub fn parse_detect(out: &str, defaults: &SubdHost) -> Option<Detected> {
     Some(detected)
 }
 
-/// Файл подписки: во временное имя рядом, права и владелец сервера, `mv -f`.
+/// Проверка токена на хосте — тот же алфавит, что и у [`check_token`].
+const TOKEN_GUARD: &str = "IFS= read -r token || exit 1; \
+    case \"$token\" in \"\"|*[!A-Za-z0-9_-]*) echo 'токен не того вида' >&2; exit 1;; esac";
+
+/// Файл подписки: токен — первой строкой stdin (не в argv), тело — дальше;
+/// во временное имя рядом под `umask 027`, права и владелец сервера, `mv -f`.
 pub fn put_cmd(host: &HostFile, subd: &SubdHost, token: &str, body: &str) -> anyhow::Result<Cmd> {
     check_token(token)?;
     let script = format!(
-        "dir={dir}/sub; tmp=\"$dir/.{token}.tmp.$$\"; umask 027; cat > \"$tmp\" && chmod 0640 \"$tmp\" && \
-         (chown {user}:{user} \"$tmp\" 2>/dev/null || true) && mv -f \"$tmp\" \"$dir/{token}.json\"",
+        "umask 027; dir={dir}/sub; {TOKEN_GUARD}; tmp=\"$dir/.braid.tmp.$$\"; trap 'rm -f \"$tmp\"' EXIT; \
+         cat > \"$tmp\" && chmod 0640 \"$tmp\" && (chown {user}:{user} \"$tmp\" 2>/dev/null || true) && \
+         mv -f \"$tmp\" \"$dir/$token.json\"",
         dir = subd.dir,
         user = SERVICE_USER
     );
-    Ok(cmd(host, "subd.put", script)
-        .with_stdin(body.to_owned())
-        .with_arg("token", token))
+    Ok(cmd(host, "subd.put", script).with_stdin(format!("{token}\n{body}")))
 }
 
+/// Удаление файла подписки; токен — первой строкой stdin.
 pub fn remove_cmd(host: &HostFile, subd: &SubdHost, token: &str) -> anyhow::Result<Cmd> {
     check_token(token)?;
-    Ok(cmd(
-        host,
-        "subd.remove",
-        format!("rm -f {}/sub/{token}.json", subd.dir),
-    )
-    .with_arg("token", token))
+    let script = format!(
+        "dir={}/sub; {TOKEN_GUARD}; rm -f \"$dir/$token.json\"",
+        subd.dir
+    );
+    Ok(cmd(host, "subd.remove", script).with_stdin(format!("{token}\n")))
 }
 
 pub fn hashes_cmd(host: &HostFile, subd: &SubdHost) -> Cmd {
@@ -212,8 +216,21 @@ mod tests {
         let token = "u8Zk3qLx9vTbN2mQwE7rYc4pHs6dJf1a";
         let put = put_cmd(&host, &subd, token, "{}").unwrap();
         assert!(put.script.contains(".tmp.$$") && put.script.contains("mv -f"));
-        assert!(put.script.starts_with("dir=/var/lib/braid-subd/sub;"));
-        assert!(put.script.ends_with(&format!("\"$dir/{token}.json\"")));
+        assert!(put.script.contains("umask 027"));
+        assert!(
+            !put.script.contains(token) && !put.remote_command().contains(token),
+            "токен не в argv: {}",
+            put.script
+        );
+        assert_eq!(
+            put.stdin_text().as_deref(),
+            Some(&*format!("{token}\n{{}}"))
+        );
+        assert!(put.script.contains("read -r token"));
+        let rm = remove_cmd(&host, &subd, token).unwrap();
+        assert!(!rm.script.contains(token), "{}", rm.script);
+        assert_eq!(rm.stdin_text().as_deref(), Some(&*format!("{token}\n")));
+        assert!(rm.script.contains("rm -f"));
         assert!(put_cmd(&host, &subd, "short", "{}").is_err());
         assert!(put_cmd(&host, &subd, "../../etc/passwd_aaaaaaaaaa", "{}").is_err());
     }

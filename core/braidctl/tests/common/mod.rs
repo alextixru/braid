@@ -147,6 +147,8 @@ pub struct HostState {
     pub server_psk: String,
     pub clients_table: String,
     pub csqtt_installed: bool,
+    /// Панель не отвечает: все csqtt.* падают как curl с 503.
+    pub csqtt_panel_down: bool,
     /// пароль → имя профиля
     pub csqtt_clients: BTreeMap<String, String>,
     pub next_password: u32,
@@ -208,8 +210,16 @@ impl FakeHost {
     }
 }
 
+/// Первая строка stdin — так приходят токен и пароль, минуя argv.
+fn first_line(stdin: &str) -> String {
+    stdin.lines().next().unwrap_or("").to_owned()
+}
+
 fn respond(st: &mut HostState, cmd: &Cmd) -> Output {
     let stdin = cmd.stdin_text().unwrap_or_default();
+    if cmd.step.starts_with("csqtt.") && cmd.step != "csqtt.detect" && st.csqtt_panel_down {
+        return Output::failure(22, "curl: (22) The requested URL returned error: 503");
+    }
     match cmd.step {
         "awg.detect" => Output::success(match st.awg_kind {
             Some("amnezia-docker") => "BRAID_AWG=amnezia-docker\nBRAID_AWG_CONTAINER=amnezia-awg\n",
@@ -266,11 +276,15 @@ fn respond(st: &mut HostState, cmd: &Cmd) -> Output {
             Output::success(serde_json::json!({"password": password, "expires": 0}).to_string())
         }
         "csqtt.delete" => {
-            let password = cmd.arg("password").expect("csqtt.delete: password");
-            if st.csqtt_clients.remove(password).is_some() {
-                Output::success("")
+            let password = first_line(&stdin);
+            assert!(
+                !password.is_empty(),
+                "csqtt.delete: пароль первой строкой stdin"
+            );
+            if st.csqtt_clients.remove(&password).is_some() {
+                Output::success("BRAID_CSQTT_HTTP=200\n")
             } else {
-                Output::failure(22, "404")
+                Output::success("BRAID_CSQTT_HTTP=404\n")
             }
         }
         "subd.detect" => Output::success(if st.subd_installed {
@@ -283,13 +297,17 @@ fn respond(st: &mut HostState, cmd: &Cmd) -> Output {
             "BRAID_SUBD=none\n".to_owned()
         }),
         "subd.put" => {
-            let token = cmd.arg("token").expect("subd.put: token").to_owned();
-            st.subs.insert(token, stdin);
+            let (token, body) = stdin
+                .split_once('\n')
+                .expect("subd.put: токен первой строкой stdin, дальше тело");
+            assert!(!token.is_empty(), "subd.put: пустой токен");
+            st.subs.insert(token.to_owned(), body.to_owned());
             Output::success("")
         }
         "subd.remove" => {
-            let token = cmd.arg("token").expect("subd.remove: token");
-            st.subs.remove(token);
+            let token = first_line(&stdin);
+            assert!(!token.is_empty(), "subd.remove: токен первой строкой stdin");
+            st.subs.remove(&token);
             Output::success("")
         }
         "subd.hashes" => {

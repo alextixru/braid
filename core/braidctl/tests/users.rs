@@ -486,3 +486,161 @@ fn import_amnezia_reuses_the_key_instead_of_issuing_a_peer() {
     assert!(bad.contains("Ключ") || bad.contains("ключ"), "{bad}");
     assert!(state.load_user_opt("eve").unwrap().is_none());
 }
+
+/// Все секреты пользователя и хоста, которые не должны попасть в argv или план.
+fn secrets_of(state: &State, name: &str) -> Vec<String> {
+    let secrets = state.load_user_secrets("helsinki", name).unwrap();
+    let awg = secrets.awg.as_ref().unwrap();
+    let mut list = vec![
+        secrets.token.clone().unwrap(),
+        secrets.csqtt.as_ref().unwrap().password.clone(),
+        awg.private_key.to_base64(),
+        SERVER_PSK.to_owned(),
+        ADMIN_TOKEN.to_owned(),
+    ];
+    if let Some(psk) = &awg.psk {
+        list.push(psk.to_base64());
+    }
+    list
+}
+
+#[test]
+fn secrets_travel_only_via_stdin_and_never_appear_in_dry_run_plans() {
+    let (state, fake) = host_with_amnezia("secrets-stdin");
+    run_ok(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki", "--admin"],
+    );
+    let secrets = secrets_of(&state, "alex");
+    for cmd in fake.shell.calls() {
+        for secret in &secrets {
+            assert!(
+                !cmd.script.contains(secret) && !cmd.remote_command().contains(secret),
+                "{}: секрет в argv ssh:\n{}",
+                cmd.step,
+                cmd.script
+            );
+        }
+    }
+
+    let dry = braidctl::DryRunShell::new();
+    let (ok, published) = common::run_with(&state, &dry, &["--dry-run", "publish"]);
+    assert!(ok, "{published}");
+    let (ok, revoked) = common::run_with(&state, &dry, &["--dry-run", "revoke", "alex"]);
+    assert!(ok, "{revoked}");
+    assert!(revoked.contains("локальные записи не удалены"), "{revoked}");
+    assert!(
+        state.user_path("alex").exists(),
+        "dry-run не удаляет пользователя"
+    );
+    let plan = dry.lines();
+    for step in ["subd.put", "awg.remove_peer", "csqtt.delete", "subd.remove"] {
+        assert!(
+            plan.iter().any(|l| l.contains(step)),
+            "в плане нет {step}: {plan:?}"
+        );
+    }
+    for text in plan.iter().chain([&published, &revoked]) {
+        for secret in &secrets {
+            assert!(!text.contains(secret), "секрет в плане dry-run:\n{text}");
+        }
+    }
+    assert_eq!(fake.state.borrow().subs.len(), 1, "dry-run хост не трогает");
+}
+
+#[test]
+fn revoke_keeps_local_records_until_csqtt_profile_is_really_gone() {
+    let (state, fake) = host_with_amnezia("revoke-panel");
+    run_ok(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki"],
+    );
+    let token = state
+        .load_user_secrets("helsinki", "alex")
+        .unwrap()
+        .token
+        .unwrap();
+
+    fake.state.borrow_mut().csqtt_panel_down = true;
+    let out = run_err(&state, &fake.shell, &["revoke", "alex"]);
+    assert!(out.contains("CSQTT"), "{out}");
+    assert!(state.user_path("alex").exists(), "пользователь остался");
+    assert!(
+        state.user_secrets_path("helsinki", "alex").exists(),
+        "секреты остались"
+    );
+    {
+        let host_state = fake.state.borrow();
+        assert_eq!(
+            host_state.csqtt_clients.len(),
+            1,
+            "пароль на сервере жив — запись не стёрта"
+        );
+        assert!(host_state.subs.contains_key(&token), "до подписки не дошли");
+    }
+
+    // Панель вернулась — повтор доводит до конца.
+    fake.state.borrow_mut().csqtt_panel_down = false;
+    let out = run_ok(&state, &fake.shell, &["revoke", "alex"]);
+    assert!(out.contains("профиль CSQTT удалён"), "{out}");
+    assert!(!state.user_path("alex").exists());
+    assert!(fake.state.borrow().csqtt_clients.is_empty());
+    assert!(!fake.state.borrow().subs.contains_key(&token));
+
+    // Профиль уже удалили руками в панели (404) — это не ошибка.
+    run_ok(
+        &state,
+        &fake.shell,
+        &["add-user", "bob", "--host", "helsinki"],
+    );
+    fake.state.borrow_mut().csqtt_clients.clear();
+    let out = run_ok(&state, &fake.shell, &["revoke", "bob"]);
+    assert!(out.contains("уже нет"), "{out}");
+    assert!(!state.user_path("bob").exists());
+}
+
+#[test]
+fn revoke_removes_the_peer_of_an_imported_key_too() {
+    let (state, fake) = host_with_amnezia("revoke-imported");
+    let pubkey = braidctl::keys::public_key_of(&CLIENT_PRIV.parse().unwrap()).to_base64();
+    {
+        let mut host_state = fake.state.borrow_mut();
+        host_state.conf.push_str(&braidctl::awg::peer_block(
+            &pubkey,
+            Some(SERVER_PSK),
+            "10.8.1.5".parse().unwrap(),
+        ));
+        host_state.clients_table =
+            format!("[{{\"clientId\": \"{pubkey}\", \"userData\": {{\"clientName\": \"bob\"}}}}]");
+    }
+    let key = amnezia_key();
+    run_ok(
+        &state,
+        &fake.shell,
+        &["import-amnezia", "bob", &key, "--host", "helsinki"],
+    );
+    assert_eq!(
+        fake.state.borrow().peers().len(),
+        2,
+        "пир уже был — не добавлен"
+    );
+
+    let out = run_ok(&state, &fake.shell, &["revoke", "bob"]);
+    assert!(out.contains("пир AWG снят"), "{out}");
+    let host_state = fake.state.borrow();
+    assert!(
+        !host_state.conf.contains(&pubkey),
+        "ключ остался в конфиге:\n{}",
+        host_state.conf
+    );
+    assert_eq!(host_state.peers().len(), 1);
+    assert!(
+        !host_state.clients_table.contains(&pubkey),
+        "{}",
+        host_state.clients_table
+    );
+    assert!(host_state.csqtt_clients.is_empty());
+    assert!(!state.user_path("bob").exists());
+}

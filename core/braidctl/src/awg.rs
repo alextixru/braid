@@ -436,10 +436,13 @@ pub struct NewPeer<'a> {
 
 /// Добавить пира (идемпотентно: если ключ уже в конфиге — ничего не меняет).
 pub fn add_peer_cmd(host: &HostFile, awg: &AwgHost, peer: &NewPeer<'_>) -> Cmd {
+    // umask 077: блок с PSK и strip-копия конфига (PrivateKey сервера, PSK всех
+    // пиров) только для владельца; trap убирает их и при обрыве.
     let inner = format!(
-        "conf={conf}; if grep -qF \"PublicKey = {pk}\" \"$conf\"; then echo BRAID_PEER=present; exit 0; fi; \
-         t=/tmp/braid-peer.$$; cat > \"$t\" && cat \"$t\" >> \"$conf\" && awg-quick strip \"$conf\" > \"$t.strip\" && \
-         awg syncconf {iface} \"$t.strip\"; rc=$?; rm -f \"$t\" \"$t.strip\"; [ $rc -eq 0 ] && echo BRAID_PEER=added; exit $rc",
+        "umask 077; conf={conf}; if grep -qF \"PublicKey = {pk}\" \"$conf\"; then echo BRAID_PEER=present; exit 0; fi; \
+         t=\"$conf.braid-peer.$$\"; trap 'rm -f \"$t\" \"$t.strip\"' EXIT; \
+         cat > \"$t\" && cat \"$t\" >> \"$conf\" && awg-quick strip \"$conf\" > \"$t.strip\" && \
+         awg syncconf {iface} \"$t.strip\" && echo BRAID_PEER=added",
         conf = awg.config,
         pk = peer.public_key,
         iface = awg.interface
@@ -454,12 +457,13 @@ pub fn add_peer_cmd(host: &HostFile, awg: &AwgHost, peer: &NewPeer<'_>) -> Cmd {
         .with_arg("ip", peer.ip.to_string())
 }
 
-/// Переписать конфиг без пира (атомарно) и применить `awg syncconf`.
+/// Переписать конфиг без пира (атомарно, с исходным режимом файла — `cp -p`,
+/// а не umask) и применить `awg syncconf`; временные файлы под `umask 077`.
 pub fn remove_peer_cmd(host: &HostFile, awg: &AwgHost, new_conf: &str, public_key: &str) -> Cmd {
     let inner = format!(
-        "conf={conf}; cat > \"$conf.braid-tmp\" && mv -f \"$conf.braid-tmp\" \"$conf\" && \
-         awg-quick strip \"$conf\" > /tmp/braid-strip.$$ && awg syncconf {iface} /tmp/braid-strip.$$; \
-         rc=$?; rm -f /tmp/braid-strip.$$; [ $rc -eq 0 ] && echo BRAID_PEER=removed; exit $rc",
+        "umask 077; conf={conf}; t=\"$conf.braid-new.$$\"; trap 'rm -f \"$t\" \"$t.strip\"' EXIT; \
+         cp -p \"$conf\" \"$t\" && cat > \"$t\" && mv -f \"$t\" \"$conf\" && \
+         awg-quick strip \"$conf\" > \"$t.strip\" && awg syncconf {iface} \"$t.strip\" && echo BRAID_PEER=removed",
         conf = awg.config,
         iface = awg.interface
     );
@@ -587,5 +591,182 @@ mod tests {
         assert_eq!(t, t2);
         assert!(t.contains("\"clientName\": \"alex\""));
         assert_eq!(clients_table_remove(&t, "K="), "[]");
+    }
+}
+
+/// Скрипты add_peer/remove_peer прогоняются настоящим `sh` в временном каталоге с
+/// подставными `awg`/`awg-quick`: временные файлы с PSK и конфигом недоступны
+/// другим, режим переписанного конфига равен исходному, хвостов не остаётся.
+#[cfg(all(test, unix))]
+mod script_tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    const CONF: &str = "[Interface]\nPrivateKey = SERVER-PRIVATE=\nAddress = 10.8.1.1/24\nListenPort = 55424\n\n[Peer]\nPublicKey = OLD=\nPresharedKey = OLDPSK=\nAllowedIPs = 10.8.1.2/32\n\n";
+
+    fn sandbox(tag: &str, conf_mode: u32) -> (std::path::PathBuf, AwgHost, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("braidctl-awg-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        let conf = dir.join("awg0.conf");
+        fs::write(&conf, CONF).unwrap();
+        fs::set_permissions(&conf, fs::Permissions::from_mode(conf_mode)).unwrap();
+        let log = dir.join("modes.log");
+        // `awg syncconf` записывает режим переданного ему файла (strip-копии конфига).
+        let awg = "#!/bin/sh\nif [ \"$1\" = syncconf ]; then (stat -f %Lp \"$3\" 2>/dev/null || stat -c %a \"$3\") >> \"$BRAID_TEST_LOG\"; fi\nexit 0\n";
+        let quick = "#!/bin/sh\n[ \"$1\" = strip ] || exit 2\ncat \"$2\"\n";
+        for (name, body) in [("awg", awg), ("awg-quick", quick)] {
+            let path = dir.join("bin").join(name);
+            fs::write(&path, body).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let host = AwgHost {
+            kind: AwgKind::Native,
+            container: String::new(),
+            interface: "awg0".into(),
+            config: conf.to_string_lossy().into_owned(),
+            port: 55424,
+            subnet: "10.8.1.0/24".parse().unwrap(),
+            gateway: Ipv4Addr::new(10, 8, 1, 1),
+            server_public_key: None,
+            dns: vec![],
+            mtu: 1280,
+            protocol_version: String::new(),
+            persistent_keepalive: None,
+            shared_psk: false,
+            params: AwgParams::default(),
+        };
+        (dir, host, log)
+    }
+
+    fn run(cmd: &Cmd, dir: &Path, log: &Path) -> (bool, String) {
+        let path = format!(
+            "{}:{}",
+            dir.join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&cmd.script)
+            .env("PATH", path)
+            .env("BRAID_TEST_LOG", log)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(cmd.stdin.as_deref().unwrap_or(&[]))
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn leftovers(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "bin" && n != "awg0.conf" && n != "modes.log")
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn add_peer_script_keeps_psk_private_and_cleans_up() {
+        let (dir, awg, log) = sandbox("add", 0o600);
+        let host = HostFile::new("h", "root@h", None);
+        let peer = NewPeer {
+            public_key: "NEW=",
+            psk: Some("NEWPSK="),
+            ip: Ipv4Addr::new(10, 8, 1, 3),
+        };
+        let cmd = add_peer_cmd(&host, &awg, &peer);
+        assert!(cmd.script.contains("umask 077"), "{}", cmd.script);
+        let (ok, out) = run(&cmd, &dir, &log);
+        assert!(ok && out.contains("BRAID_PEER=added"), "{out}");
+        let text = fs::read_to_string(dir.join("awg0.conf")).unwrap();
+        assert!(text.contains("PublicKey = NEW=") && text.contains("PresharedKey = NEWPSK="));
+        assert_eq!(
+            mode(&dir.join("awg0.conf")),
+            0o600,
+            "режим конфига не изменился"
+        );
+        assert_eq!(
+            fs::read_to_string(&log).unwrap().trim(),
+            "600",
+            "strip-копия конфига (PrivateKey, все PSK) только для владельца"
+        );
+        assert!(leftovers(&dir).is_empty(), "хвосты: {:?}", leftovers(&dir));
+
+        let (ok, out) = run(&cmd, &dir, &log);
+        assert!(ok && out.contains("BRAID_PEER=present"), "{out}");
+        assert_eq!(
+            fs::read_to_string(dir.join("awg0.conf")).unwrap(),
+            text,
+            "повтор не дублирует пира"
+        );
+        let docker = add_peer_cmd(
+            &host,
+            &AwgHost {
+                kind: AwgKind::AmneziaDocker,
+                container: "amnezia-awg".into(),
+                ..awg.clone()
+            },
+            &peer,
+        );
+        assert!(docker.script.contains("umask 077"), "{}", docker.script);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_peer_script_preserves_config_mode_and_hides_temp_files() {
+        let (dir, awg, log) = sandbox("remove", 0o640);
+        let host = HostFile::new("h", "root@h", None);
+        let (new_conf, removed) = without_peer(CONF, "OLD=");
+        assert!(removed);
+        let cmd = remove_peer_cmd(&host, &awg, &new_conf, "OLD=");
+        assert!(cmd.script.contains("umask 077"), "{}", cmd.script);
+        let (ok, out) = run(&cmd, &dir, &log);
+        assert!(ok && out.contains("BRAID_PEER=removed"), "{out}");
+        assert_eq!(fs::read_to_string(dir.join("awg0.conf")).unwrap(), new_conf);
+        assert_eq!(
+            mode(&dir.join("awg0.conf")),
+            0o640,
+            "переписанный конфиг сохраняет исходный режим, а не umask процесса"
+        );
+        assert_eq!(fs::read_to_string(&log).unwrap().trim(), "600");
+        assert!(leftovers(&dir).is_empty(), "хвосты: {:?}", leftovers(&dir));
+        let docker = remove_peer_cmd(
+            &host,
+            &AwgHost {
+                kind: AwgKind::AmneziaDocker,
+                container: "amnezia-awg".into(),
+                ..awg.clone()
+            },
+            &new_conf,
+            "OLD=",
+        );
+        assert!(docker.script.contains("umask 077"), "{}", docker.script);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

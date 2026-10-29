@@ -157,13 +157,42 @@ fn check_password(password: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Исход удаления профиля по HTTP-коду панели.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    Deleted,
+    Absent,
+}
+
+/// 200/204 — удалён, 404 — его уже нет; всё остальное (панель лежит, 429,
+/// curl не достучался — `000`, маркера нет) — ошибка: профиль ещё жив.
+pub fn parse_delete(out: &str) -> anyhow::Result<DeleteOutcome> {
+    let code = out
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("BRAID_CSQTT_HTTP="))
+        .map(str::trim)
+        .context("панель CSQTT не ответила на удаление профиля")?;
+    match code {
+        "200" | "204" => Ok(DeleteOutcome::Deleted),
+        "404" => Ok(DeleteOutcome::Absent),
+        other => bail!("панель CSQTT ответила HTTP {other} на удаление профиля"),
+    }
+}
+
+/// `DELETE /api/clients/<пароль>`; пароль — первой строкой stdin, не в URL в argv.
+/// Без `--fail`: код ответа печатается маркером `BRAID_CSQTT_HTTP=<код>`,
+/// транспортная ошибка curl роняет скрипт (`set -e`).
 pub fn delete_cmd(host: &HostFile, csqtt: &CsqttHost, password: &str) -> anyhow::Result<Cmd> {
     check_password(password)?;
     let request = format!(
-        "curl -ksS --fail -b \"$jar\" -X DELETE https://127.0.0.1:{}/api/clients/{password}",
+        "IFS= read -r password || exit 1; \
+         case \"$password\" in \"\"|*[!A-Za-z0-9._-]*) echo 'пароль не того вида' >&2; exit 1;; esac; \
+         code=$(curl -ksS -o /dev/null -w '%{{http_code}}' -b \"$jar\" -X DELETE \
+           \"https://127.0.0.1:{}/api/clients/$password\"); \
+         echo \"BRAID_CSQTT_HTTP=$code\"",
         csqtt.web_port
     );
-    Ok(cmd(host, "csqtt.delete", api_script(csqtt, &request)).with_arg("password", password))
+    Ok(cmd(host, "csqtt.delete", api_script(csqtt, &request)).with_stdin(format!("{password}\n")))
 }
 
 #[cfg(test)]
@@ -195,7 +224,38 @@ mod tests {
         );
         assert!(delete_cmd(&host, &csqtt, "bad password").is_err());
         let del = delete_cmd(&host, &csqtt, "Abc123").unwrap();
-        assert!(del.script.contains("-X DELETE") && del.script.ends_with("/api/clients/Abc123"));
+        assert!(del.script.contains("-X DELETE") && del.script.contains("read -r password"));
+        assert!(
+            !del.script.contains("Abc123") && !del.remote_command().contains("Abc123"),
+            "пароль не в argv: {}",
+            del.script
+        );
+        assert_eq!(del.stdin_text().as_deref(), Some("Abc123\n"));
+        assert!(del.script.contains("BRAID_CSQTT_HTTP="), "{}", del.script);
+    }
+
+    #[test]
+    fn delete_outcome_distinguishes_gone_from_failure() {
+        assert_eq!(
+            parse_delete("BRAID_CSQTT_HTTP=200\n").unwrap(),
+            DeleteOutcome::Deleted
+        );
+        assert_eq!(
+            parse_delete("BRAID_CSQTT_HTTP=404\n").unwrap(),
+            DeleteOutcome::Absent
+        );
+        assert!(
+            parse_delete("BRAID_CSQTT_HTTP=429\n").is_err(),
+            "429 — не «уже нет»"
+        );
+        assert!(
+            parse_delete("BRAID_CSQTT_HTTP=000\n").is_err(),
+            "curl не достучался"
+        );
+        assert!(
+            parse_delete("").is_err(),
+            "нет маркера — не считать удалённым"
+        );
     }
 
     #[test]
