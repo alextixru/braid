@@ -18,5 +18,9 @@ braid-engine-awg = { path = "../braid-engine-awg" }
 braid-engine-csqtt = { path = "../braid-engine-csqtt" }
 tracing.workspace = true
 
+# Android: JNI_OnLoad и мост ядра для сервиса VPN (src/android.rs).
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+
 [dev-dependencies]
 serde_json.workspace = true

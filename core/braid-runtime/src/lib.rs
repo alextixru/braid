@@ -4,7 +4,10 @@
 //! системные часы, HTTPS-клиент подписки и [`EngineFactory`], которая по
 //! `EngineSpec` из подписки строит `AwgEngine`, `CsqttEngine` или тестовый
 //! `NullEngine` (слот `other{kind:"null"}`). Ядро одно на процесс:
-//! повторный `build_core` возвращает уже собранное.
+//! повторный `build_core` возвращает уже собранное. [`android`] держит мост
+//! `CoreBridge` для JNI-входов сервиса Android и (только под Android) `JNI_OnLoad`.
+
+pub mod android;
 
 use braid_core::core::{CoreDeps, CoreError, device_id};
 use braid_core::engines::EngineFactory as BuildEngine;

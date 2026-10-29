@@ -3,7 +3,9 @@
 //!
 //! - [`platform`] — трейт [`Platform`] и его типы;
 //! - [`macos`] — клиент root-помощника `braid-helper` (тикет 08);
-//! - [`android`] — JNI-мост к `BraidVpnService` (тикет 09);
+//! - [`android`] — `AndroidPlatform` и JNI-мост к `BraidVpnService` (тикет 09); логика без JNI
+//!   (маршруты, JSON интерфейса, уведомление, платформа над `ServiceCalls`) собирается и
+//!   тестируется на хосте, JNI-части — только под `target_os = "android"`;
 //! - [`linux`], [`windows`] — заглушки: собираются, отвечают `Unsupported` (G01);
 //! - [`memory`] — `MemoryPlatform` с `MemoryTun` на socketpair для тестов без привилегий.
 //!
@@ -11,7 +13,6 @@
 
 pub mod platform;
 
-#[cfg(target_os = "android")]
 pub mod android;
 pub mod linux;
 #[cfg(target_os = "macos")]
