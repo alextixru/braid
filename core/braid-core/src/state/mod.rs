@@ -100,12 +100,23 @@ pub struct SubscriptionView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "banner", rename_all = "snake_case")]
 pub enum Banner {
-    UpdateAvailable { latest: String, url: Option<String> },
+    UpdateAvailable {
+        latest: String,
+        url: Option<String>,
+    },
     NeedsHashes,
     NeedsVkLogin,
-    SubscriptionStale { since: DateTime<Utc> },
+    SubscriptionStale {
+        since: DateTime<Utc>,
+    },
     Revoked,
-    OtherVpn { iface: String },
+    OtherVpn {
+        iface: String,
+    },
+    /// Новая сеть с правилом «спрашивать» (ист. 58): подключаться здесь?
+    AutoconnectAsk {
+        network: NetworkId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

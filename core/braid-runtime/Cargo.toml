@@ -1,0 +1,22 @@
+[package]
+name = "braid-runtime"
+description = "Сборка ядра для приложения: фабрика движков (AWG, CSQTT, null) и build_core(platform, storage_dir) — общий вход для моста Flutter и сервиса Android"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+build = "build.rs"
+# Линкует braid-engine-csqtt → csqtt-core (PolyForm Noncommercial 1.0.0).
+license = "PolyForm-Noncommercial-1.0.0"
+
+[dependencies]
+braid-core.workspace = true
+braid-platform.workspace = true
+braid-proto.workspace = true
+braid-engine-awg = { path = "../braid-engine-awg" }
+braid-engine-csqtt = { path = "../braid-engine-csqtt" }
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

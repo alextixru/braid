@@ -238,11 +238,11 @@ fn core_is_created_once_per_process_and_streams_state() {
         core.import_link("vpn://nope"),
         Err(CoreError::Link(braid_core::proto::LinkError::NotBraid))
     );
-    // Инвариант, который переживёт реализацию (R08.1): без подписки подключаться нечем —
-    // `connect` отвечает ошибкой; какой именно, тест не фиксирует.
-    assert!(
-        core.connect().is_err(),
-        "без подписки connect обязан вернуть ошибку"
+    // R08.1: без подписки подключаться нечем — `connect` отвечает `NeedsLink`.
+    assert_eq!(
+        core.connect(),
+        Err(CoreError::NeedsLink),
+        "без подписки connect обязан вернуть NeedsLink"
     );
     assert_eq!(
         core.import_link("vpn://nope").unwrap_err().to_string(),

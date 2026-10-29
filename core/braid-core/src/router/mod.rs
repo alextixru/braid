@@ -163,8 +163,18 @@ pub fn route_table(cfg: &RouterConfig, rules: &RuleBook) -> Vec<Ipv4Net> {
     Ipv4Net::aggregate(&routes)
 }
 
-/// Ожидающий ответа запрос через туннель: идентификатор и канал ответа.
-type PendingQuery = (u16, oneshot::Sender<Vec<u8>>);
+/// Получатель ответа на пробу живости: вызывается один раз в потоке движка.
+pub type ProbeReply = Box<dyn FnOnce(&[u8]) + Send>;
+
+/// Кто ждёт ответ на запрос через туннель: канал резолвера или колбэк
+/// пробы живости (тикет 03, ист. 25).
+enum Waiter {
+    Channel(oneshot::Sender<Vec<u8>>),
+    Callback(ProbeReply),
+}
+
+/// Ожидающий ответа запрос через туннель: идентификатор и получатель ответа.
+type PendingQuery = (u16, Waiter);
 
 struct EngineSlot {
     engine: Arc<dyn Engine>,
@@ -461,23 +471,32 @@ impl Shared {
 
     fn deliver_pending(&self, port: u16, payload: &[u8]) {
         let waiter = self.pending.lock().remove(&port);
-        if let Some((id, tx)) = waiter
+        if let Some((id, waiter)) = waiter
             && transaction_id(payload) == Some(id)
         {
-            let _ = tx.send(payload.to_vec());
+            match waiter {
+                Waiter::Channel(tx) => {
+                    let _ = tx.send(payload.to_vec());
+                }
+                Waiter::Callback(on_reply) => on_reply(payload),
+            }
         }
     }
 
     /// Занять порт прокси под запрос через туннель.
     pub(crate) fn register_pending(&self, id: u16) -> (u16, oneshot::Receiver<Vec<u8>>) {
         let (tx, rx) = oneshot::channel();
+        (self.register_waiter(id, Waiter::Channel(tx)), rx)
+    }
+
+    fn register_waiter(&self, id: u16, waiter: Waiter) -> u16 {
         let mut pending = self.pending.lock();
         loop {
             let n = self.next_proxy_port.fetch_add(1, Ordering::Relaxed);
             let port = PROXY_PORT_BASE + n % PROXY_PORT_SPAN;
             if let Entry::Vacant(slot) = pending.entry(port) {
-                slot.insert((id, tx));
-                return (port, rx);
+                slot.insert((id, waiter));
+                return port;
             }
         }
     }
@@ -735,6 +754,44 @@ impl Router {
 
     pub fn lookup_fake(&self, ip: Ipv4Addr) -> Option<FakeEntry> {
         self.shared.dns.lookup_fake(ip, self.shared.clock.now())
+    }
+
+    /// Проба живости через названный движок (ист. 25): DNS-запрос `query`
+    /// уходит от имени прокси к `server` через движок — не обязательно
+    /// активный; ответ сервера приходит обратным NAT и отдаётся в `on_reply`
+    /// (в потоке движка). Возвращает билет для [`Router::cancel_probe`];
+    /// `None` — движок не зарегистрирован, без адреса или не принял пакет.
+    pub fn probe_via(
+        &self,
+        engine: &EngineId,
+        server: Ipv4Addr,
+        query: &[u8],
+        on_reply: ProbeReply,
+    ) -> Option<u16> {
+        let shared = &self.shared;
+        let id = transaction_id(query)?;
+        let engine_ip = {
+            let known = shared.engines.read().get(engine)?.ip;
+            match known {
+                Some(ip) => ip,
+                None => {
+                    self.refresh_engine(engine);
+                    shared.engines.read().get(engine)?.ip?
+                }
+            }
+        };
+        let port = shared.register_waiter(id, Waiter::Callback(on_reply));
+        let pkt = packet::build_udp(shared.cfg.proxy_address, port, server, DNS_PORT, query);
+        if !shared.forward_from_proxy(&pkt, engine.clone(), engine_ip) {
+            shared.cancel_pending(port);
+            return None;
+        }
+        Some(port)
+    }
+
+    /// Проба не дождалась ответа: забыть её порт.
+    pub fn cancel_probe(&self, ticket: u16) {
+        self.shared.cancel_pending(ticket);
     }
 
     /// Android re-establish: новый fd без остановки.

@@ -412,6 +412,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "braid-runtime"
+version = "0.1.0"
+dependencies = [
+ "braid-core",
+ "braid-engine-awg",
+ "braid-engine-csqtt",
+ "braid-platform",
+ "braid-proto",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "braid-subd"
 version = "0.1.0"
 dependencies = [
