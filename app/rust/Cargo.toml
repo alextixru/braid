@@ -23,14 +23,9 @@ serde_json = "1"
 # Только `block_on(watch::Receiver::changed())` в потоке ленты состояний.
 tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
 
-# Логи ядра и сервиса идут через `tracing`. На Android их забирает слой logcat
-# (`logging.rs`); на остальных ОС подписчик не ставится. Зависимости — только
-# под Android и в тестах (проверка политики уровней на хосте).
-[target.'cfg(target_os = "android")'.dependencies]
-tracing = "0.1"
-tracing-android = "0.2"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
-
+# Логи ядра и сервиса идут через `tracing`; подписчика logcat на Android ставит
+# braid-runtime (`JNI_OnLoad` → `init_logcat`), мост его только дёргает
+# (`logging.rs`). Здесь tracing нужен лишь тестам политики уровней на хосте.
 [dev-dependencies]
 chrono = "0.4"
 tracing = "0.1"

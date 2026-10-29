@@ -9,6 +9,8 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    // Канал ссылок braid:// живёт на движке главного окна; AppDelegate только принимает URL.
+    DeepLinkChannel.shared.attach(to: flutterViewController)
 
     super.awakeFromNib()
   }

@@ -33,7 +33,9 @@ import java.util.concurrent.RejectedExecutionException
  *
  * Жизнь сервиса = жизнь сессии: он уходит по «Отключить», по `stopService` из
  * приложения и когда ядро сообщает, что сессии больше нет (`idle`, `needs_link`,
- * `interrupted`). Native-вызовы идут в одном рабочем потоке: `connect()` ядра ходит в
+ * `interrupted`). Исключение — [ACTION_INIT] из окна (`initCore`): ядро поднимается без
+ * подключения, сервис не выходит в foreground и живёт, пока приложение на виду.
+ * Native-вызовы идут в одном рабочем потоке: `connect()` ядра ходит в
  * `establish()` и запускает движки — главному потоку там делать нечего.
  */
 class BraidVpnService : VpnService() {
@@ -46,6 +48,8 @@ class BraidVpnService : VpnService() {
         const val EXTRA_LINK = "link"
 
         const val ACTION_START = "org.braid.vpn.START"
+        /** Поднять ядро без подключения (`initCore` из окна): `nativeInit`, но не `connect`. */
+        const val ACTION_INIT = "org.braid.vpn.INIT"
         const val ACTION_STOP = "org.braid.vpn.STOP"
         const val ACTION_RESUME = "org.braid.vpn.RESUME"
         const val ACTION_DISCONNECT = "org.braid.vpn.DISCONNECT"
@@ -62,6 +66,15 @@ class BraidVpnService : VpnService() {
 
         @Volatile
         var isRunning: Boolean = false
+            private set
+
+        /**
+         * Ядро процесса собрано (`nativeInit` прошёл хотя бы раз). Живёт, пока жив процесс,
+         * и после ухода сервиса: окну хватает `Core::global()` через мост, а повторный
+         * `initCore` — успех без действий.
+         */
+        @Volatile
+        var coreReady: Boolean = false
             private set
 
         /** Ссылка `braid://`, которую ядро не приняло без подтверждения замены хоста. */
@@ -168,6 +181,13 @@ class BraidVpnService : VpnService() {
                 foreground()
                 native { if (!resume()) stop() }
                 return START_STICKY
+            }
+            ACTION_INIT -> {
+                // Окно просит ядро без подключения: состояние, ссылка, правила — без VPN и без
+                // «Не удалось подключиться» при холодном старте без подписки. В foreground не
+                // выходим; сессию, которую ядро восстановит само, updateNotification выведет
+                // туда. Ядро уже собрано — ничего не делаем.
+                native { ensureInit() }
             }
             ACTION_STOP, ACTION_DISCONNECT -> {
                 // Из уведомления (getForegroundService) сервис обязан выйти в foreground,
@@ -376,6 +396,7 @@ class BraidVpnService : VpnService() {
             return false
         }
         initialized = true
+        coreReady = true
         watcher.start()
         val power = getSystemService(PowerManager::class.java)
         nativeSetIdle(power?.isInteractive == false)

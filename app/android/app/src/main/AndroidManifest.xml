@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- Сеть движков и подписки. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -9,6 +10,13 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Постоянное уведомление сервиса и события (Android 13+, ист. 57). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Список установленных приложений для правил «по приложениям» (ист. 42, 43; метод
+         installedApps канала org.braid/vpn). С Android 11 PackageManager без этого разрешения
+         отдаёт только пакеты из <queries>, а VPN-клиенту с маршрутизацией по приложениям нужен
+         полный список — допустимое основание для QUERY_ALL_PACKAGES. -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission"/>
 
     <application
         android:label="Braid"

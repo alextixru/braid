@@ -1,58 +1,36 @@
 //! Куда идут логи ядра и сервиса (`tracing`).
 //!
-//! - Android: в logcat, тег `braid`, от уровня `info`. Без подписчика все
-//!   события ядра, движков и сервиса теряются (в logcat попадали бы только
-//!   `log`-сообщения самой flutter_rust_bridge).
+//! - Android: в logcat, тег `braid`, от уровня `info`. Подписчика ставит
+//!   `braid_runtime::android::init_logcat` — из `JNI_OnLoad`, когда сервис
+//!   грузит библиотеку (`System.loadLibrary`): так логи старта по boot не
+//!   теряются. Если первым библиотеку открыл Dart (`RustLib.init()` —
+//!   `dlopen`, `JNI_OnLoad` не зовётся), подписчика тем же входом ставит
+//!   [`init`]; кто пришёл вторым, ничего не меняет — второго подписчика нет.
 //! - macOS и остальные ОС — как было: подписчик не ставится, FRB сама
 //!   направляет `log` в консоль ОС.
 //!
 //! Что пишется в журнал, решает ядро: ключей, токенов, хешей VK, доменов и
 //! адресов пользователя в логах нет (правило 4), а уровни `debug`/`trace`
-//! сюда не доходят — logcat не должен забиваться шумом HTTP и TLS.
+//! до logcat не доходят — политика уровней живёт в `braid_runtime::android`.
 
-#[cfg(any(target_os = "android", test))]
-use tracing::Subscriber;
-#[cfg(any(target_os = "android", test))]
-use tracing_subscriber::filter::LevelFilter;
-#[cfg(any(target_os = "android", test))]
-use tracing_subscriber::layer::SubscriberExt;
-#[cfg(any(target_os = "android", test))]
-use tracing_subscriber::{Layer, Registry};
-
-/// Тег записей в logcat (системный лимит — 23 байта).
-#[cfg(target_os = "android")]
-const LOGCAT_TAG: &str = "braid";
-
-/// Самый подробный уровень, который уходит в системный журнал.
-#[cfg(any(target_os = "android", test))]
-const MAX_LEVEL: LevelFilter = LevelFilter::INFO;
-
-/// Подписчик процесса: события не подробнее [`MAX_LEVEL`] идут на `output`.
-#[cfg(any(target_os = "android", test))]
-fn subscriber<L>(output: L) -> impl Subscriber + Send + Sync
-where
-    L: Layer<Registry> + Send + Sync + 'static,
-{
-    Registry::default().with(output).with(MAX_LEVEL)
-}
-
-/// Поставить подписчика процесса. Безопасно звать повторно: если подписчик
-/// уже стоит (сервис поднял ядро раньше окна), второй вызов ничего не меняет.
+/// Поставить подписчика процесса. Безопасно звать повторно и после
+/// `JNI_OnLoad`: занятый глобальный подписчик — не ошибка, паники нет.
 pub fn init() {
     #[cfg(target_os = "android")]
-    if let Ok(layer) = tracing_android::layer(LOGCAT_TAG) {
-        // Занятый глобальный подписчик — не ошибка: логи уже идут куда надо.
-        let _ = tracing::subscriber::set_global_default(subscriber(layer));
+    {
+        braid_runtime::android::init_logcat();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::init;
+    use braid_runtime::android::logcat_subscriber;
     use std::sync::{Arc, Mutex};
     use tracing::field::{Field, Visit};
-    use tracing::Event;
+    use tracing::{Event, Subscriber};
     use tracing_subscriber::layer::Context;
+    use tracing_subscriber::Layer;
 
     /// Слой-«logcat»: запоминает уровень и текст каждого события.
     #[derive(Clone, Default)]
@@ -79,10 +57,11 @@ mod tests {
         }
     }
 
+    /// Политика уровней — та же, что в logcat: подписчик берётся из runtime.
     #[test]
     fn only_info_and_above_reach_the_output() {
         let capture = Capture::default();
-        tracing::subscriber::with_default(subscriber(capture.clone()), || {
+        tracing::subscriber::with_default(logcat_subscriber(capture.clone()), || {
             tracing::trace!("trace");
             tracing::debug!("debug");
             tracing::info!("info");

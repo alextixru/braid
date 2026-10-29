@@ -7,7 +7,10 @@
 //! `libbraid_ffi.so` (`System.loadLibrary("braid_ffi")` в сервисе), то есть до первого
 //! native-вызова. `JNI_OnLoad` — ровно один на библиотеку, только здесь и только под
 //! Android; сам мост собирается на любой ОС и проверяется хостовым тестом
-//! (`tests/android_bridge.rs`).
+//! (`tests/android_bridge.rs`). Там же, в `JNI_OnLoad`, ставится подписчик logcat
+//! ([`init_logcat`]): сервис грузит библиотеку раньше любого native-вызова, поэтому
+//! логи старта по boot не теряются; мост Flutter (`init_app()`) зовёт тот же вход —
+//! кто второй, ничего не меняет.
 
 use crate::build_core;
 use braid_core::core::CoreError;
@@ -23,6 +26,10 @@ use std::path::Path;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
+use tracing::Subscriber;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{Layer, Registry};
 
 /// Мост сервиса к ядру процесса.
 pub struct RuntimeBridge;
@@ -187,13 +194,46 @@ impl CoreBridge for RuntimeBridge {
     }
 }
 
+/// Тег записей ядра и сервиса в logcat (системный лимит — 23 байта).
+pub const LOGCAT_TAG: &str = "braid";
+
+/// Самый подробный уровень, который уходит в logcat: `debug`/`trace` — шум HTTP
+/// и TLS. Что именно пишется, решает ядро: ключей, токенов, хешей VK, доменов и
+/// адресов пользователя в логах нет (правило 4).
+pub const LOGCAT_MAX_LEVEL: LevelFilter = LevelFilter::INFO;
+
+/// Подписчик процесса для logcat: события не подробнее [`LOGCAT_MAX_LEVEL`] идут
+/// в `output`. Отделён от [`init_logcat`], чтобы политику уровней проверял
+/// хостовый тест — слой logcat есть только под Android.
+pub fn logcat_subscriber<L>(output: L) -> impl Subscriber + Send + Sync
+where
+    L: Layer<Registry> + Send + Sync + 'static,
+{
+    Registry::default().with(output).with(LOGCAT_MAX_LEVEL)
+}
+
+/// Поставить подписчика logcat (тег [`LOGCAT_TAG`], от `info`) один раз на
+/// процесс. Идемпотентно: занятый глобальный подписчик — не ошибка (`false`),
+/// логи уже идут куда надо; паники нет, второго подписчика тоже. `false` и
+/// если слой logcat не создался (тогда логов в logcat не будет вовсе).
+#[cfg(target_os = "android")]
+pub fn init_logcat() -> bool {
+    use tracing_subscriber::util::SubscriberInitExt;
+    match tracing_android::layer(LOGCAT_TAG) {
+        Ok(layer) => logcat_subscriber(layer).try_init().is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// Регистрация моста при загрузке библиотеки сервисом — до первого native-вызова.
+/// Логгер — первым: всё, что скажут мост и ядро дальше, уже попадает в logcat.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(
     _vm: *mut jni::sys::JavaVM,
     _reserved: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
+    init_logcat();
     if !braid_platform::android::install_core_bridge(Arc::new(RuntimeBridge)) {
         tracing::debug!("мост ядра уже установлен");
     }

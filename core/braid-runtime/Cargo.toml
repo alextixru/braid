@@ -17,10 +17,14 @@ braid-proto.workspace = true
 braid-engine-awg = { path = "../braid-engine-awg" }
 braid-engine-csqtt = { path = "../braid-engine-csqtt" }
 tracing.workspace = true
+# Подписчик logcat (`android::logcat_subscriber`): состав и политика уровней
+# проверяются хостовым тестом, сам слой logcat — только под Android.
+tracing-subscriber.workspace = true
 
-# Android: JNI_OnLoad и мост ядра для сервиса VPN (src/android.rs).
+# Android: JNI_OnLoad, мост ядра для сервиса VPN и слой logcat для tracing (src/android.rs).
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
+tracing-android = "0.2"
 
 [dev-dependencies]
 serde_json.workspace = true

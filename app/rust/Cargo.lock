@@ -377,6 +377,8 @@ dependencies = [
  "braid-proto",
  "jni",
  "tracing",
+ "tracing-android",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -394,7 +396,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-android",
  "tracing-subscriber",
 ]
 
