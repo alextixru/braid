@@ -3,7 +3,7 @@
 //! `verify`, выгрузка телеметрии для `stats`. Контракт сервера — тикет 06.
 
 use crate::model::{HostFile, SubdHost};
-use crate::shell::Cmd;
+use crate::shell::{Cmd, sh_quote};
 use anyhow::bail;
 use braid_proto::SpkiSha256;
 use std::collections::BTreeMap;
@@ -38,6 +38,7 @@ pub struct Detected {
     pub active: bool,
 }
 
+/// Путь конфига — из hosts/*.toml, в скрипт только через `sh_quote`.
 pub fn detect_cmd(host: &HostFile, config: &str) -> Cmd {
     let script = format!(
         "cfg={config}; if [ -x {bin} ]; then \
@@ -48,6 +49,7 @@ pub fn detect_cmd(host: &HostFile, config: &str) -> Cmd {
            [ -n \"$tf\" ] && cat \"$tf\" 2>/dev/null; echo; \
            echo \"### active\"; systemctl is-active braid-subd 2>/dev/null; \
          else echo BRAID_SUBD=none; fi",
+        config = sh_quote(config),
         bin = BINARY
     );
     cmd(host, "subd.detect", script).with_arg("config", config)
@@ -103,13 +105,14 @@ const TOKEN_GUARD: &str = "IFS= read -r token || exit 1; \
 
 /// Файл подписки: токен — первой строкой stdin (не в argv), тело — дальше;
 /// во временное имя рядом под `umask 027`, права и владелец сервера, `mv -f`.
+/// `dir` — из hosts/*.toml, в скрипт только через `sh_quote` (здесь и ниже).
 pub fn put_cmd(host: &HostFile, subd: &SubdHost, token: &str, body: &str) -> anyhow::Result<Cmd> {
     check_token(token)?;
     let script = format!(
         "umask 027; dir={dir}/sub; {TOKEN_GUARD}; tmp=\"$dir/.braid.tmp.$$\"; trap 'rm -f \"$tmp\"' EXIT; \
          cat > \"$tmp\" && chmod 0640 \"$tmp\" && (chown {user}:{user} \"$tmp\" 2>/dev/null || true) && \
          mv -f \"$tmp\" \"$dir/$token.json\"",
-        dir = subd.dir,
+        dir = sh_quote(&subd.dir),
         user = SERVICE_USER
     );
     Ok(cmd(host, "subd.put", script).with_stdin(format!("{token}\n{body}")))
@@ -120,7 +123,7 @@ pub fn remove_cmd(host: &HostFile, subd: &SubdHost, token: &str) -> anyhow::Resu
     check_token(token)?;
     let script = format!(
         "dir={}/sub; {TOKEN_GUARD}; rm -f \"$dir/$token.json\"",
-        subd.dir
+        sh_quote(&subd.dir)
     );
     Ok(cmd(host, "subd.remove", script).with_stdin(format!("{token}\n")))
 }
@@ -131,7 +134,7 @@ pub fn hashes_cmd(host: &HostFile, subd: &SubdHost) -> Cmd {
         "subd.hashes",
         format!(
             "cd {}/sub 2>/dev/null && sha256sum -- *.json 2>/dev/null; exit 0",
-            subd.dir
+            sh_quote(&subd.dir)
         ),
     )
 }
@@ -156,7 +159,7 @@ pub fn telemetry_cmd(host: &HostFile, subd: &SubdHost) -> Cmd {
         format!(
             "cd {}/telemetry 2>/dev/null || exit 0; for f in *.jsonl; do [ -f \"$f\" ] || continue; \
              printf '### %s\\n' \"$f\"; cat -- \"$f\"; echo; done",
-            subd.dir
+            sh_quote(&subd.dir)
         ),
     )
 }
@@ -233,6 +236,89 @@ mod tests {
         assert!(rm.script.contains("rm -f"));
         assert!(put_cmd(&host, &subd, "short", "{}").is_err());
         assert!(put_cmd(&host, &subd, "../../etc/passwd_aaaaaaaaaa", "{}").is_err());
+    }
+
+    /// Скрипт команды — настоящим `sh`, stdin — из команды.
+    #[cfg(unix)]
+    fn run_sh(cmd: &Cmd) -> (bool, String) {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&cmd.script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(cmd.stdin.as_deref().unwrap_or(&[]))
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripts_quote_the_subd_dir_with_spaces_and_quotes() {
+        use std::fs;
+        // `dir` из hosts/*.toml с пробелом и апострофом: скрипты должны класть,
+        // читать и удалять файлы именно там, а не падать на разборе.
+        let root = std::env::temp_dir().join(format!("braidctl-subd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("it's a dir");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::create_dir_all(dir.join("telemetry")).unwrap();
+        fs::write(dir.join("telemetry/dev1.jsonl"), "{\"a\":1}\n").unwrap();
+        let host = HostFile::new("h", "root@h", None);
+        let subd = SubdHost {
+            dir: dir.to_string_lossy().into_owned(),
+            ..SubdHost::default()
+        };
+        let token = "u8Zk3qLx9vTbN2mQwE7rYc4pHs6dJf1a";
+        let put = put_cmd(&host, &subd, token, "{\"v\":1}").unwrap();
+        let (ok, out) = run_sh(&put);
+        assert!(ok, "{out}\n{}", put.script);
+        assert_eq!(
+            fs::read_to_string(dir.join(format!("sub/{token}.json"))).unwrap(),
+            "{\"v\":1}"
+        );
+        let telemetry = telemetry_cmd(&host, &subd);
+        let (ok, out) = run_sh(&telemetry);
+        assert!(
+            ok && out.contains("### dev1.jsonl") && out.contains("{\"a\":1}"),
+            "{out}\n{}",
+            telemetry.script
+        );
+        let remove = remove_cmd(&host, &subd, token).unwrap();
+        let (ok, out) = run_sh(&remove);
+        assert!(ok, "{out}\n{}", remove.script);
+        assert!(!dir.join(format!("sub/{token}.json")).exists());
+        let hashes = hashes_cmd(&host, &subd);
+        assert!(
+            hashes.script.contains(&crate::shell::sh_quote(&subd.dir)),
+            "{}",
+            hashes.script
+        );
+        let detect = detect_cmd(&host, "/etc/my braid's/subd.toml");
+        assert!(
+            detect
+                .script
+                .contains("cfg='/etc/my braid'\\''s/subd.toml';"),
+            "{}",
+            detect.script
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -87,7 +87,8 @@ pub struct Client {
     pub device_id: String,
 }
 
-/// Вход в панель и один запрос `request` с cookie.
+/// Вход в панель и один запрос `request` с cookie. `config_dir` — из
+/// hosts/*.toml, в скрипт только через `sh_quote`.
 fn api_script(csqtt: &CsqttHost, request: &str) -> String {
     format!(
         "set -e; . {dir}/csqtt.env; \
@@ -97,7 +98,7 @@ fn api_script(csqtt: &CsqttHost, request: &str) -> String {
            --data \"{{\\\"user\\\":\\\"$(esc \"$CSQTT_WEB_USER\")\\\",\\\"pass\\\":\\\"$(esc \"$CSQTT_WEB_PASS\")\\\"}}\" \
            https://127.0.0.1:{port}/api/login; \
          {request}",
-        dir = csqtt.config_dir,
+        dir = sh_quote(&csqtt.config_dir),
         port = csqtt.web_port
     )
 }
@@ -214,7 +215,11 @@ mod tests {
         let host = HostFile::new("h", "root@h", None);
         let csqtt = CsqttHost::default();
         let create = create_cmd(&host, &csqtt, "alex");
-        assert!(create.script.contains(". /etc/csqtt/csqtt.env"));
+        assert!(
+            create.script.contains(". '/etc/csqtt'/csqtt.env"),
+            "{}",
+            create.script
+        );
         assert!(create.script.contains("/api/login"));
         assert!(create.script.contains("\"days\":0"));
         assert!(
@@ -232,6 +237,38 @@ mod tests {
         );
         assert_eq!(del.stdin_text().as_deref(), Some("Abc123\n"));
         assert!(del.script.contains("BRAID_CSQTT_HTTP="), "{}", del.script);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_dir_with_space_and_quote_gives_a_valid_script() {
+        let host = HostFile::new("h", "root@h", None);
+        let csqtt = CsqttHost {
+            config_dir: "/etc/my csqtt's".into(),
+            ..CsqttHost::default()
+        };
+        for cmd in [
+            clients_cmd(&host, &csqtt),
+            create_cmd(&host, &csqtt, "alex"),
+            delete_cmd(&host, &csqtt, "Abc123").unwrap(),
+        ] {
+            assert!(
+                cmd.script.contains(". '/etc/my csqtt'\\''s'/csqtt.env;"),
+                "{}: {}",
+                cmd.step,
+                cmd.script
+            );
+            let syntax = std::process::Command::new("sh")
+                .args(["-n", "-c", &cmd.script])
+                .output()
+                .unwrap();
+            assert!(
+                syntax.status.success(),
+                "{}: sh -n: {}",
+                cmd.step,
+                String::from_utf8_lossy(&syntax.stderr)
+            );
+        }
     }
 
     #[test]

@@ -165,15 +165,32 @@ pub enum Autoconnect {
     Never,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub autostart: bool,
     pub autoconnect_default: Autoconnect,
     pub autoconnect_networks: BTreeMap<NetworkId, Autoconnect>,
     /// Уведомления о переключении движка; по умолчанию выключены (G08).
     pub notify_switches: bool,
+    /// Kill switch по умолчанию включён (G03, ист. 6 и 33): при мёртвых движках
+    /// защищённый трафик и DNS правил не уходят напрямую. Выключение — только
+    /// явный выбор пользователя. То же умолчание — в зеркале Dart и эталоне
+    /// `app/test/fixtures/settings.json`.
     pub kill_switch: bool,
     pub dns_mode: DnsMode,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            autoconnect_default: Autoconnect::default(),
+            autoconnect_networks: BTreeMap::new(),
+            notify_switches: false,
+            kill_switch: true,
+            dns_mode: DnsMode::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

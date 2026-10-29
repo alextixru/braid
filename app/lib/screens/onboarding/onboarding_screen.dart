@@ -1,3 +1,4 @@
+import 'package:braid/app.dart' show appName;
 import 'package:braid/controller/braid_controller.dart';
 import 'package:braid/controller/braid_scope.dart';
 import 'package:braid/controller/connect_models.dart';
@@ -119,7 +120,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     autocorrect: false,
                     enableSuggestions: false,
                     decoration: InputDecoration(
-                      labelText: 'Ссылка Braid',
+                      labelText: 'Ссылка $appName',
                       hintText: 'braid://…',
                       errorText: _error,
                       errorMaxLines: 3,

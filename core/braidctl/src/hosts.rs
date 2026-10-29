@@ -3,7 +3,7 @@
 
 use crate::cli::Env;
 use crate::model::{HostFile, HostSecrets, validate_id};
-use crate::shell::{Cmd, Shell, run_checked};
+use crate::shell::{Cmd, Shell, run_checked, sh_quote};
 use crate::{awg, csqtt, subd};
 use anyhow::{Context as _, bail};
 use std::net::Ipv4Addr;
@@ -231,25 +231,29 @@ fn status_cmd(host: &HostFile) -> Cmd {
         "echo \"csqtt: $(systemctl is-active csqtt 2>/dev/null || true)\"; \
          echo \"braid-subd: $(systemctl is-active braid-subd 2>/dev/null || true)\"; ",
     );
+    // Контейнер, интерфейс и каталог — из hosts/*.toml: в скрипт через `sh_quote`,
+    // в переменные, чтобы внутри двойных кавычек они стояли без своих кавычек.
     if let Some(awg) = &host.awg {
         match awg.kind {
             crate::model::AwgKind::AmneziaDocker => script.push_str(&format!(
-                "echo \"docker {c}: $(docker inspect --format '{{{{.State.Status}}}}' {c} 2>/dev/null || echo none)\"; \
-                 echo \"peers: $(docker exec {c} awg show {i} peers 2>/dev/null | wc -l | tr -d ' ')\"; ",
-                c = awg.container,
-                i = awg.interface
+                "c={c}; i={i}; \
+                 echo \"docker $c: $(docker inspect --format '{{{{.State.Status}}}}' \"$c\" 2>/dev/null || echo none)\"; \
+                 echo \"peers: $(docker exec \"$c\" awg show \"$i\" peers 2>/dev/null | wc -l | tr -d ' ')\"; ",
+                c = sh_quote(&awg.container),
+                i = sh_quote(&awg.interface)
             )),
             crate::model::AwgKind::Native => script.push_str(&format!(
-                "echo \"awg {i}: $(awg show {i} 2>/dev/null >/dev/null && echo up || echo down)\"; \
-                 echo \"peers: $(awg show {i} peers 2>/dev/null | wc -l | tr -d ' ')\"; ",
-                i = awg.interface
+                "i={i}; \
+                 echo \"awg $i: $(awg show \"$i\" 2>/dev/null >/dev/null && echo up || echo down)\"; \
+                 echo \"peers: $(awg show \"$i\" peers 2>/dev/null | wc -l | tr -d ' ')\"; ",
+                i = sh_quote(&awg.interface)
             )),
         }
     }
     if let Some(subd) = &host.subd {
         script.push_str(&format!(
             "echo \"subs: $(ls {}/sub/*.json 2>/dev/null | wc -l | tr -d ' ')\"; ",
-            subd.dir
+            sh_quote(&subd.dir)
         ));
     }
     script.push_str("true");
@@ -289,4 +293,61 @@ pub fn require_public_ip(host: &HostFile) -> anyhow::Result<Ipv4Addr> {
             host.id, host.id
         )
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::model::{AwgKind, SubdHost};
+    use crate::shell::sh_quote;
+
+    fn sh_syntax_ok(script: &str) -> Result<(), String> {
+        let out = std::process::Command::new("sh")
+            .args(["-n", "-c", script])
+            .output()
+            .unwrap();
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
+    }
+
+    #[test]
+    fn status_script_quotes_container_interface_and_dir_from_the_host_file() {
+        let mut host = HostFile::new("h", "root@h", None);
+        host.subd = Some(SubdHost {
+            dir: "/var/lib/braid's subd".into(),
+            ..SubdHost::default()
+        });
+        let docker = awg::skeleton(&awg::Detected {
+            kind: AwgKind::AmneziaDocker,
+            container: "amnezia awg's".into(),
+            interface: "wg 0".into(),
+        });
+        let native = awg::skeleton(&awg::Detected {
+            kind: AwgKind::Native,
+            container: String::new(),
+            interface: "awg 0".into(),
+        });
+        for (awg_host, values) in [
+            (
+                docker,
+                vec!["amnezia awg's", "wg 0", "/var/lib/braid's subd"],
+            ),
+            (native, vec!["awg 0", "/var/lib/braid's subd"]),
+        ] {
+            host.awg = Some(awg_host);
+            let cmd = status_cmd(&host);
+            assert_eq!(cmd.step, "host.status");
+            sh_syntax_ok(&cmd.script).unwrap_or_else(|e| panic!("{e}\n{}", cmd.script));
+            for value in values {
+                assert!(
+                    cmd.script.contains(&sh_quote(value)),
+                    "«{value}» без экранирования: {}",
+                    cmd.script
+                );
+            }
+        }
+    }
 }

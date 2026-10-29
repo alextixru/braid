@@ -50,7 +50,7 @@ class Settings with Value {
     this.autoconnectDefault = Autoconnect.ask,
     this.autoconnectNetworks = const {},
     this.notifySwitches = false,
-    this.killSwitch = false,
+    this.killSwitch = true,
     this.dnsMode = DnsMode.rulesOnly,
   });
 
@@ -64,6 +64,9 @@ class Settings with Value {
 
   /// Уведомления о переключении движка; по умолчанию выключены.
   final bool notifySwitches;
+
+  /// Kill switch по умолчанию включён (G03, ист. 6 и 33) — как в ядре и в
+  /// эталоне `test/fixtures/settings.json`; выключение — явный выбор.
   final bool killSwitch;
   final DnsMode dnsMode;
 

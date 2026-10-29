@@ -6,6 +6,7 @@ library;
 
 import 'dart:async';
 
+import 'package:braid/app.dart' show appName;
 import 'package:braid/bridge/braid_bridge.dart';
 import 'package:braid/controller/connect_models.dart';
 import 'package:braid/controller/ui_requests.dart';
@@ -383,7 +384,7 @@ class BraidController extends ChangeNotifier {
     }
     if (!await _awaitSession() && !_cancelRequested) {
       _emitNotice(
-        'Не удалось подключиться. Подробности — в уведомлении Braid.',
+        'Не удалось подключиться. Подробности — в уведомлении $appName.',
       );
     }
   }

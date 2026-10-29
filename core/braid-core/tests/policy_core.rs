@@ -3,10 +3,12 @@
 //! движки — `LoopbackEngine` (отвечает на пробы) и `NullEngine` (молчит),
 //! время — `FakeClock`, тики — вручную.
 
+mod router_common;
 mod subscription_common;
 
 use braid_core::core::{CoreConfig, CoreDeps};
-use braid_core::dns::StaticResolver;
+use braid_core::dns::{StaticResolver, Via};
+use braid_core::engine::{EngineHooks, EngineIo};
 use braid_core::journal::TelemetryUploader;
 use braid_core::proto::{
     EngineId, EngineSpec, Ipv4Net, LogEvent, LogRecord, NetworkId, NetworkKind, SpkiSha256,
@@ -19,12 +21,23 @@ use braid_core::{
     EngineSnapshot, EngineState, EngineView, FsStorage, RulesChange, SessionState, Settings,
     Storage, UserAction, UserInput,
 };
+use router_common::{PROXY_ADDR, TUN_ADDR, dns_query, parse, parse_dns, udp};
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use subscription_common::{SUBSCRIPTION, TOKEN, fetched, link_to, other_host_body};
+
+/// Адрес из подсети набора `google` тестовой подписки (8.8.8.0/24) — пакеты
+/// к нему идут в интерфейс и дальше в активный движок.
+const RULES_HOST: Ipv4Addr = Ipv4Addr::new(8, 8, 8, 8);
+
+/// Сколько реального времени ждать пакета из tun: роутер работает в своих потоках.
+const TUN_WAIT: Duration = Duration::from_secs(2);
+
+/// Столько ждём, чтобы убедиться, что из tun ничего не выйдет.
+const TUN_QUIET: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -32,11 +45,14 @@ enum Kind {
     Alive,
     /// Всё глотает — пробы теряются.
     Silent,
+    /// Эхо на UDP, которое тест может заглушить и заставить повторить ответ.
+    Scripted,
 }
 
 enum TestEngine {
     Alive(Arc<LoopbackEngine>),
     Silent(Arc<NullEngine>),
+    Scripted(Arc<ScriptedEngine>),
 }
 
 impl TestEngine {
@@ -50,6 +66,7 @@ impl TestEngine {
                     ..EngineSnapshot::default()
                 },
             ))),
+            Kind::Scripted => Self::Scripted(Arc::new(ScriptedEngine::new(id, ip))),
         }
     }
 
@@ -57,6 +74,7 @@ impl TestEngine {
         match self {
             Self::Alive(e) => e.clone(),
             Self::Silent(e) => e.clone(),
+            Self::Scripted(e) => e.clone(),
         }
     }
 
@@ -64,6 +82,7 @@ impl TestEngine {
         match self {
             Self::Alive(e) => e.snapshot().state != EngineState::Stopped,
             Self::Silent(e) => e.is_started(),
+            Self::Scripted(e) => e.is_started(),
         }
     }
 
@@ -71,14 +90,179 @@ impl TestEngine {
         match self {
             Self::Alive(e) => e.network_changes(),
             Self::Silent(e) => e.network_changes(),
+            Self::Scripted(e) => e.network_changes(),
         }
     }
 
     fn null(&self) -> &NullEngine {
         match self {
             Self::Silent(e) => e,
-            Self::Alive(_) => panic!("нужен молчащий движок"),
+            Self::Alive(_) | Self::Scripted(_) => panic!("нужен молчащий движок"),
         }
+    }
+
+    fn scripted(&self) -> &ScriptedEngine {
+        match self {
+            Self::Scripted(e) => e,
+            Self::Alive(_) | Self::Silent(_) => panic!("нужен управляемый движок"),
+        }
+    }
+}
+
+/// «Сервер» с ручным управлением: отвечает эхом на UDP, как `LoopbackEngine`,
+/// но его можно заглушить (пробы теряются — движок умирает и оживает по
+/// команде теста) и попросить повторить последний ответ без нового запроса —
+/// так роутер пишет в tun, ничего из него не читая (зависший интерфейс).
+#[derive(Default)]
+struct ScriptedInner {
+    started: bool,
+    muted: bool,
+    io: Option<EngineIo>,
+    tunnel_ip: Option<Ipv4Addr>,
+    tx_bytes: u64,
+    rx_bytes: u64,
+    last_rx: Option<Instant>,
+    last_reply: Option<Vec<u8>>,
+    network_changes: u32,
+    state: EngineState,
+}
+
+struct ScriptedEngine {
+    id: EngineId,
+    inner: Mutex<ScriptedInner>,
+}
+
+impl ScriptedEngine {
+    fn new(id: &str, ip: Ipv4Addr) -> Self {
+        Self {
+            id: EngineId::from(id),
+            inner: Mutex::new(ScriptedInner {
+                tunnel_ip: Some(ip),
+                ..ScriptedInner::default()
+            }),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ScriptedInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Заглушить: пакеты принимаются, ответов нет — пробы теряются.
+    fn mute(&self, on: bool) {
+        self.lock().muted = on;
+    }
+
+    fn is_started(&self) -> bool {
+        self.lock().started
+    }
+
+    fn network_changes(&self) -> u32 {
+        self.lock().network_changes
+    }
+
+    /// Сыграть последний ответ ещё раз — пакет «от сервера» без запроса.
+    fn replay(&self) -> bool {
+        let (io, reply) = {
+            let mut inner = self.lock();
+            let Some(reply) = inner.last_reply.clone() else {
+                return false;
+            };
+            (inner.io.take(), reply)
+        };
+        let Some(io) = io else { return false };
+        (io.inbound)(&reply);
+        self.lock().io = Some(io);
+        true
+    }
+
+    /// Эхо как у `LoopbackEngine`: IPv4/UDP без опций — адреса и порты местами.
+    fn echo(pkt: &[u8]) -> Option<Vec<u8>> {
+        if pkt.len() < 28 || pkt[0] >> 4 != 4 || pkt[0] & 0x0f != 5 || pkt[9] != 17 {
+            return None;
+        }
+        let mut out = pkt.to_vec();
+        out[12..16].copy_from_slice(&pkt[16..20]);
+        out[16..20].copy_from_slice(&pkt[12..16]);
+        out[20..22].copy_from_slice(&pkt[22..24]);
+        out[22..24].copy_from_slice(&pkt[20..22]);
+        Some(out)
+    }
+}
+
+impl Engine for ScriptedEngine {
+    fn id(&self) -> EngineId {
+        self.id.clone()
+    }
+
+    fn start(
+        &self,
+        _spec: &EngineSpec,
+        io: EngineIo,
+        _hooks: Arc<dyn EngineHooks>,
+    ) -> Result<(), EngineError> {
+        let mut inner = self.lock();
+        inner.started = true;
+        inner.io = Some(io);
+        inner.state = EngineState::Connected;
+        Ok(())
+    }
+
+    fn stop(&self) {
+        let mut inner = self.lock();
+        inner.started = false;
+        inner.io = None;
+        inner.state = EngineState::Stopped;
+    }
+
+    fn send(&self, pkt: &[u8]) -> Result<(), EngineError> {
+        let (io, reply) = {
+            let mut inner = self.lock();
+            if !inner.started {
+                return Err(EngineError::NotStarted);
+            }
+            inner.tx_bytes += pkt.len() as u64;
+            if inner.muted {
+                return Ok(());
+            }
+            let Some(reply) = Self::echo(pkt) else {
+                return Ok(());
+            };
+            inner.rx_bytes += reply.len() as u64;
+            inner.last_rx = Some(Instant::now());
+            // Для повтора годится только ответ на пользовательский пакет: ответ
+            // на пробу (DNS, порт 53) роутер забирает себе и в tun не пишет.
+            if u16::from_be_bytes([pkt[22], pkt[23]]) != 53 {
+                inner.last_reply = Some(reply.clone());
+            }
+            (inner.io.take(), reply)
+        };
+        if let Some(io) = io {
+            (io.inbound)(&reply);
+            self.lock().io = Some(io);
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> EngineSnapshot {
+        let inner = self.lock();
+        EngineSnapshot {
+            state: inner.state,
+            tunnel_ip: inner.tunnel_ip,
+            tx_bytes: inner.tx_bytes,
+            rx_bytes: inner.rx_bytes,
+            last_rx: inner.last_rx,
+            ..EngineSnapshot::default()
+        }
+    }
+
+    fn on_network_change(&self) {
+        self.lock().network_changes += 1;
+    }
+
+    fn user_input(&self, _input: UserInput) -> Result<(), EngineError> {
+        Err(EngineError::Unsupported(
+            "scripted: ввод пользователя не нужен".into(),
+        ))
     }
 }
 
@@ -146,7 +330,14 @@ impl Bench {
             fetcher: fetcher.clone(),
             engines: Arc::new(factory),
             uploader: uploader.clone(),
-            resolver: Some(Arc::new(StaticResolver::new())),
+            // Прямой резолвер знает домен из правил: так видно, ушёл ли запрос
+            // провайдеру с настоящим адресом или получил SERVFAIL (ист. 33).
+            resolver: Some(Arc::new(StaticResolver::new().with(
+                Via::Direct,
+                "google.com",
+                Ipv4Addr::new(93, 184, 216, 34),
+                60,
+            ))),
             config: CoreConfig {
                 probe_wait: Duration::from_millis(300),
                 blocking_uploads: true,
@@ -181,6 +372,41 @@ impl Bench {
             self.clock.advance(Duration::from_secs(1));
             self.core.tick();
         }
+    }
+
+    /// UDP «из ОС» к адресу из подсети правил; `sport` различает пакеты.
+    fn send_to_rules_host(&self, sport: u16) {
+        self.platform
+            .inject(&udp(TUN_ADDR, sport, RULES_HOST, 4000, b"ping"))
+            .expect("интерфейс открыт");
+    }
+
+    /// Ответ, который роутер записал в tun; `None` — за `TUN_WAIT` ничего.
+    fn recv_from_tun(&self) -> Option<Vec<u8>> {
+        self.platform.recv(TUN_WAIT).expect("интерфейс открыт")
+    }
+
+    /// Убедиться, что из tun ничего не выходит.
+    fn tun_is_quiet(&self) -> bool {
+        self.platform
+            .recv(TUN_QUIET)
+            .expect("интерфейс открыт")
+            .is_none()
+    }
+
+    /// Запрос A домена из правил к DNS-прокси и разобранный ответ.
+    fn resolve_rules_domain(&self, id: u16) -> Option<router_common::DnsReply> {
+        self.platform
+            .inject(&udp(
+                TUN_ADDR,
+                40000 + id,
+                PROXY_ADDR,
+                53,
+                &dns_query(id, "google.com", 1),
+            ))
+            .expect("интерфейс открыт");
+        self.recv_from_tun()
+            .map(|pkt| parse_dns(&parse(&pkt).payload))
     }
 
     fn engine(&self, id: &EngineId) -> EngineView {
@@ -433,31 +659,146 @@ fn network_change_reopens_engine_sockets_without_reconnecting() {
 }
 
 #[test]
-fn watchdog_restarts_tun_after_30s_of_silence_with_alive_probes() {
-    let b = Bench::new("watchdog", Kind::Alive, Kind::Alive);
+fn idle_tun_does_not_trigger_the_watchdog() {
+    // Простой: пробы живы, но в tun нет ни чтений, ни записей — устройство
+    // просто молчит. Перезапуск здесь рвал бы все потоки NAT и CSQTT зря.
+    let b = Bench::new("watchdog-idle", Kind::Alive, Kind::Alive);
     b.import();
     b.core.connect().unwrap();
-    b.run(29);
-    assert_eq!(b.platform.open_count(), 1);
+    b.run(150);
+    assert_eq!(
+        b.platform.open_count(),
+        1,
+        "простаивающий интерфейс не пересоздаётся"
+    );
+    assert!(
+        !b.journal()
+            .iter()
+            .any(|e| matches!(e, LogEvent::WatchdogRestart { .. })),
+        "{:?}",
+        b.journal()
+    );
+    assert_eq!(b.core.state().session, SessionState::Connected);
+}
+
+#[test]
+fn watchdog_restarts_a_hung_tun_that_takes_writes_but_gives_no_reads() {
+    // Зависание: сервер шлёт (роутер пишет в tun), а из tun 30 с ничего не
+    // читается при живых пробах — интерфейс застрял, сессия пересоздаётся.
+    let b = Bench::new("watchdog-hang", Kind::Scripted, Kind::Alive);
+    b.import();
+    b.core.connect().unwrap();
     b.run(1);
+    b.send_to_rules_host(40001);
+    assert!(b.recv_from_tun().is_some(), "эхо через активный движок");
+    // Каждую секунду сервер шлёт пакет без запроса; ОС его забирает (иначе
+    // переполнится буфер socketpair), но сама ничего не отправляет.
+    let hang = |secs: u64| {
+        for _ in 0..secs {
+            assert!(b.awg.scripted().replay(), "сервер шлёт в tun без запроса");
+            assert!(b.recv_from_tun().is_some(), "роутер записал пакет в tun");
+            b.run(1);
+        }
+    };
+    hang(29);
+    assert_eq!(b.platform.open_count(), 1, "29 с — ещё не зависание");
+    hang(1);
     assert_eq!(
         b.platform.open_count(),
         2,
-        "30 с без чтения tun — сессия пересоздана"
+        "30 с записей без чтений при живых пробах — сессия пересоздана"
     );
     assert!(
         b.journal()
-            .contains(&LogEvent::WatchdogRestart { silent_s: 30 })
+            .contains(&LogEvent::WatchdogRestart { silent_s: 30 }),
+        "{:?}",
+        b.journal()
     );
     b.run(1);
     let state = b.core.state();
     assert_eq!(state.session, SessionState::Connected);
     assert_eq!(state.active, Some(awg()));
     assert!(b.awg.is_started() && b.csqtt.is_started());
-    b.run(59);
+
+    // Новое зависание сразу после перезапуска: не чаще раза в две минуты.
+    b.send_to_rules_host(40002);
+    assert!(b.recv_from_tun().is_some(), "новая сессия несёт трафик");
+    hang(118);
     assert_eq!(b.platform.open_count(), 2, "не чаще раза в две минуты");
-    b.run(60);
+    hang(1);
     assert_eq!(b.platform.open_count(), 3);
+}
+
+#[test]
+fn revived_active_engine_carries_traffic_again_after_no_host() {
+    // Хост умер целиком (kill switch снял активный с роутера), потом ожил:
+    // состояние «Подключено» должно снова нести защищённый трафик, а не
+    // отбрасывать его до ручного «Повторить».
+    let b = Bench::new("revive", Kind::Scripted, Kind::Silent);
+    b.import();
+    b.core.connect().unwrap();
+    b.run(2);
+    assert_eq!(b.core.state().session, SessionState::Connected);
+    b.send_to_rules_host(40001);
+    assert!(b.recv_from_tun().is_some(), "эхо до смерти хоста");
+
+    b.awg.scripted().mute(true);
+    b.run(20);
+    let state = b.core.state();
+    assert!(
+        matches!(state.session, SessionState::NoHost { .. }),
+        "{:?}",
+        state.session
+    );
+    assert_eq!(state.active, None);
+    b.send_to_rules_host(40002);
+    assert!(
+        b.tun_is_quiet(),
+        "kill switch: напрямую не уходит и эха нет"
+    );
+
+    b.awg.scripted().mute(false);
+    b.run(10);
+    let state = b.core.state();
+    assert_eq!(state.session, SessionState::Connected);
+    assert_eq!(state.active, Some(awg()));
+    b.send_to_rules_host(40003);
+    assert!(
+        b.recv_from_tun().is_some(),
+        "оживший активный снова получает трафик"
+    );
+}
+
+#[test]
+fn kill_switch_is_on_by_default_so_dead_host_servfails_rule_domains() {
+    // Ист. 33 с умолчаниями: ни один движок не жив — DNS домена из правил
+    // отвечает SERVFAIL, а не уходит провайдеру с настоящим адресом.
+    assert!(Settings::default().kill_switch, "ядро");
+    let b = Bench::new("killswitch-default", Kind::Silent, Kind::Silent);
+    assert!(b.core.settings().kill_switch, "без сохранённых настроек");
+    b.import();
+    b.core.connect().unwrap();
+    b.run(20);
+    assert!(matches!(
+        b.core.state().session,
+        SessionState::NoHost { .. }
+    ));
+    let reply = b.resolve_rules_domain(0x4242).expect("прокси отвечает");
+    assert_eq!((reply.rcode, reply.answers), (2, 0), "SERVFAIL: {reply:?}");
+
+    // Выключить kill switch — только явный выбор пользователя.
+    b.core
+        .set_settings(Settings {
+            kill_switch: false,
+            ..Settings::default()
+        })
+        .unwrap();
+    let reply = b.resolve_rules_domain(0x4243).expect("прокси отвечает");
+    assert_eq!(reply.rcode, 0, "{reply:?}");
+    assert_eq!(
+        reply.a.first().map(|a| a.0),
+        Some(Ipv4Addr::new(93, 184, 216, 34))
+    );
 }
 
 #[test]

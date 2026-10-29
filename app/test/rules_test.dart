@@ -5,6 +5,7 @@
 import 'package:braid/bridge/braid_bridge.dart';
 import 'package:braid/models/commands.dart';
 import 'package:braid/models/core_state.dart';
+import 'package:braid/services/rules_files.dart';
 import 'package:braid/services/vpn_channel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,11 +22,13 @@ Rig desktopRig({CoreState? state, FakeRulesFiles? files}) => Rig(
   autoAnswer: false,
 );
 
-Rig androidRig({CoreState? state, FakeVpn? vpn}) => Rig(
+/// Как в `main.dart`: файловые диалоги есть и на Android — хранилище ядра
+/// лежит в `noBackupFilesDir`, системная резервная копия правила не спасёт.
+Rig androidRig({CoreState? state, FakeVpn? vpn, FakeRulesFiles? files}) => Rig(
   bridge: FakeBridge(state: state ?? idleState(), caps: androidCaps),
   platform: android,
   vpn: vpn ?? FakeVpn(),
-  files: FakeRulesFiles(available: false),
+  files: files,
   autoAnswer: false,
 );
 
@@ -428,13 +431,33 @@ void main() {
     });
 
     testWidgets(
-      'на Android экспорта и импорта нет (там системная резервная копия)',
+      'на Android экспорт и импорт тоже есть — резервная копия правила не хранит',
       (tester) async {
-        await openRules(tester, androidRig());
-        expect(find.byKey(const Key('rules-export')), findsNothing);
-        expect(find.byKey(const Key('rules-import')), findsNothing);
+        final files = FakeRulesFiles();
+        final rig = await openRules(
+          tester,
+          androidRig(state: withUserRules, files: files),
+        );
+        await reveal(tester, find.byKey(const Key('rules-export')));
+        expect(find.byKey(const Key('rules-import')), findsOneWidget);
+        await tester.tap(find.byKey(const Key('rules-export')));
+        await tester.pumpAndSettle();
+        expect(files.saved, hasLength(1));
+        expect(files.saved.single.$2, contains('"example.org"'));
+        expect(rig.bridge.rulesChanges, isEmpty);
       },
     );
+
+    test('файловые диалоги приложения доступны и на Android, не только на десктопе', () {
+      expect(rulesFilesFor(macOS).available, isTrue);
+      expect(
+        rulesFilesFor(android).available,
+        isTrue,
+        reason:
+            'хранилище ядра на Android — noBackupFilesDir, резервная копия '
+            'правила не хранит; переносить их можно только файлом',
+      );
+    });
   });
 
   group('приложения (Android)', () {

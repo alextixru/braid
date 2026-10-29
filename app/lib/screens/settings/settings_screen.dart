@@ -1,3 +1,4 @@
+import 'package:braid/app.dart' show appName;
 import 'package:braid/controller/braid_controller.dart';
 import 'package:braid/controller/braid_scope.dart';
 import 'package:braid/models/settings.dart';
@@ -31,7 +32,7 @@ class SettingsScreen extends StatelessWidget {
                   subtitle: Text(
                     controller.platform.isAndroid
                         ? 'Возвращать подключение после перезагрузки телефона'
-                        : 'Запускать Braid при входе в систему и возвращать подключение',
+                        : 'Запускать $appName при входе в систему и возвращать подключение',
                   ),
                   value: settings.autostart,
                   onChanged: (on) => controller.updateSettings(
@@ -136,7 +137,7 @@ class SettingsScreen extends StatelessWidget {
             child: ListTile(
               key: const Key('setting-version'),
               leading: const Icon(Icons.info_outline),
-              title: Text('Braid ${controller.clientVersion}'),
+              title: Text('$appName ${controller.clientVersion}'),
               subtitle: Text('ядро ${controller.coreVersion}'),
             ),
           ),

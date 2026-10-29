@@ -854,9 +854,10 @@ void main() {
       final rig = Rig();
       addTearDown(rig.dispose);
       await rig.start();
-      await rig.controller.updateSettings((s) => s.copyWith(killSwitch: true));
-      expect(rig.controller.settings.killSwitch, isTrue);
-      expect(rig.bridge.settingsWrites.single.killSwitch, isTrue);
+      // Kill switch включён по умолчанию — изменение здесь это его выключение.
+      await rig.controller.updateSettings((s) => s.copyWith(killSwitch: false));
+      expect(rig.controller.settings.killSwitch, isFalse);
+      expect(rig.bridge.settingsWrites.single.killSwitch, isFalse);
     });
 
     test('отказ ядра откатывает настройку и сообщает причину', () async {

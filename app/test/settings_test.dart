@@ -44,23 +44,28 @@ SwitchListTile switchTile(WidgetTester tester, String key) =>
 Settings lastWrite(Rig rig) => rig.bridge.settingsWrites.last;
 
 void main() {
-  testWidgets('умолчания: уведомления выключены, DNS — только домены правил', (
-    tester,
-  ) async {
-    await openSettings(tester);
+  testWidgets(
+    'умолчания: уведомления выключены, kill switch включён, DNS — только домены правил',
+    (tester) async {
+      await openSettings(tester);
 
-    expect(switchTile(tester, 'setting-autostart').value, isFalse);
-    expect(switchTile(tester, 'setting-notify').value, isFalse);
-    expect(switchTile(tester, 'setting-kill-switch').value, isFalse);
-    final dns = tester.widget<SegmentedButton<DnsMode>>(
-      find.byKey(const Key('setting-dns-mode')),
-    );
-    expect(dns.selected, {DnsMode.rulesOnly});
-    final defaults = tester.widget<SegmentedButton<Autoconnect>>(
-      find.byKey(const Key('autoconnect-default')),
-    );
-    expect(defaults.selected, {Autoconnect.ask});
-  });
+      expect(switchTile(tester, 'setting-autostart').value, isFalse);
+      expect(switchTile(tester, 'setting-notify').value, isFalse);
+      expect(
+        switchTile(tester, 'setting-kill-switch').value,
+        isTrue,
+        reason: 'G03: защищённое напрямую не уходит, пока пользователь сам не выключит',
+      );
+      final dns = tester.widget<SegmentedButton<DnsMode>>(
+        find.byKey(const Key('setting-dns-mode')),
+      );
+      expect(dns.selected, {DnsMode.rulesOnly});
+      final defaults = tester.widget<SegmentedButton<Autoconnect>>(
+        find.byKey(const Key('autoconnect-default')),
+      );
+      expect(defaults.selected, {Autoconnect.ask});
+    },
+  );
 
   testWidgets('настройки, которые уже были, показываются как есть', (
     tester,
@@ -70,14 +75,14 @@ void main() {
       settings: const Settings(
         autostart: true,
         notifySwitches: true,
-        killSwitch: true,
+        killSwitch: false,
         dnsMode: DnsMode.allViaTunnel,
         autoconnectDefault: Autoconnect.never,
       ),
     );
     expect(switchTile(tester, 'setting-autostart').value, isTrue);
     expect(switchTile(tester, 'setting-notify').value, isTrue);
-    expect(switchTile(tester, 'setting-kill-switch').value, isTrue);
+    expect(switchTile(tester, 'setting-kill-switch').value, isFalse);
     expect(
       tester
           .widget<SegmentedButton<DnsMode>>(
@@ -114,9 +119,10 @@ void main() {
       reason: 'прежние настройки не потерялись',
     );
 
+    // Kill switch включён по умолчанию — явное выключение пишется в ядро.
     await tester.tap(find.byKey(const Key('setting-kill-switch')));
     await tester.pumpAndSettle();
-    expect(lastWrite(rig).killSwitch, isTrue);
+    expect(lastWrite(rig).killSwitch, isFalse);
     expect(rig.bridge.settingsWrites, hasLength(3));
   });
 

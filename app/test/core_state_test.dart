@@ -172,12 +172,13 @@ void main() {
   });
 
   group('настройки', () {
-    test('умолчания эталона: уведомления о переключении выключены', () {
+    test('умолчания эталона: уведомления выключены, kill switch включён', () {
       final defaults =
           fixtureObject('settings.json')['defaults'] as Map<String, dynamic>;
       final settings = Settings.fromJson(defaults);
       expect(settings, const Settings());
       expect(settings.notifySwitches, isFalse);
+      expect(settings.killSwitch, isTrue, reason: 'G03, ист. 33');
       expect(settings.autoconnectDefault, Autoconnect.ask);
       expect(settings.dnsMode, DnsMode.rulesOnly);
       expect(settings.toJson(), defaults);
@@ -196,7 +197,7 @@ void main() {
           'gw:99887766aabbccdd': Autoconnect.ask,
         });
         expect(settings.notifySwitches, isTrue);
-        expect(settings.killSwitch, isTrue);
+        expect(settings.killSwitch, isFalse);
         expect(settings.dnsMode, DnsMode.allViaTunnel);
         expect(settings.toJson(), changed);
       },
@@ -204,12 +205,12 @@ void main() {
 
     test('copyWith меняет одно поле и не трогает остальные', () {
       const base = Settings(
-        killSwitch: true,
+        killSwitch: false,
         autoconnectNetworks: {'n': Autoconnect.never},
       );
       final next = base.copyWith(notifySwitches: true);
       expect(next.notifySwitches, isTrue);
-      expect(next.killSwitch, isTrue);
+      expect(next.killSwitch, isFalse);
       expect(next.autoconnectNetworks, {'n': Autoconnect.never});
     });
   });

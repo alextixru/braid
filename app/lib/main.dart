@@ -34,7 +34,7 @@ Future<void> main() async {
     links: platform.isDesktop ? ChannelDeepLinks() : const NoDeepLinks(),
     prefs: const SharedUiPrefs(),
     dirs: const SystemAppDirs(),
-    files: platform.isDesktop ? const PickerRulesFiles() : const NoRulesFiles(),
+    files: rulesFilesFor(platform),
     scanner: platform.isAndroid ? const CameraQrScanner() : const NoQrScanner(),
   );
   runApp(BraidApp(controller: controller));

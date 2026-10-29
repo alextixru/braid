@@ -8,7 +8,7 @@
 //! (`wireguard_psk.key`), если он есть; нативному — свой.
 
 use crate::model::{AwgHost, AwgKind, HostFile};
-use crate::shell::Cmd;
+use crate::shell::{Cmd, sh_quote};
 use anyhow::{Context as _, bail};
 use braid_proto::{AwgParams, Base64Key};
 use chrono::{DateTime, Utc};
@@ -238,12 +238,14 @@ fn cmd(host: &HostFile, step: &'static str, script: String) -> Cmd {
     Cmd::new(host.ssh.clone(), step, script).with_sudo(host.sudo)
 }
 
-/// Скрипт внутри контейнера: `docker exec [-i] <c> sh -c '<inner>'`.
+/// Скрипт внутри контейнера: `docker exec [-i] '<c>' sh -c '<inner>'`.
+/// Имя контейнера приходит из hosts/*.toml и экранируется, как и всё оттуда.
 fn docker_sh(container: &str, inner: &str, stdin: bool) -> String {
     let flag = if stdin { "-i " } else { "" };
     format!(
-        "docker exec {flag}{container} sh -c {}",
-        crate::shell::sh_quote(inner)
+        "docker exec {flag}{} sh -c {}",
+        sh_quote(container),
+        sh_quote(inner)
     )
 }
 
@@ -319,6 +321,7 @@ pub fn skeleton(detected: &Detected) -> AwgHost {
 }
 
 /// Чтение конфига, публичного ключа и (в контейнере) общего PSK одной командой.
+/// Путь конфига и интерфейс — из hosts/*.toml, в скрипт только через `sh_quote`.
 pub fn read_cmd(host: &HostFile, awg: &AwgHost) -> Cmd {
     let script = match awg.kind {
         AwgKind::AmneziaDocker => docker_sh(
@@ -326,7 +329,7 @@ pub fn read_cmd(host: &HostFile, awg: &AwgHost) -> Cmd {
             &format!(
                 "echo \"### conf\"; cat {conf}; echo; echo \"### pubkey\"; cat {pk} 2>/dev/null; echo; \
                  echo \"### psk\"; cat {psk} 2>/dev/null; echo",
-                conf = awg.config,
+                conf = sh_quote(&awg.config),
                 pk = AMNEZIA_PUBKEY,
                 psk = AMNEZIA_PSK
             ),
@@ -335,8 +338,8 @@ pub fn read_cmd(host: &HostFile, awg: &AwgHost) -> Cmd {
         AwgKind::Native => format!(
             "echo \"### conf\"; cat {conf}; echo; echo \"### pubkey\"; awg show {iface} public-key 2>/dev/null; echo; \
              echo \"### psk\"; echo",
-            conf = awg.config,
-            iface = awg.interface
+            conf = sh_quote(&awg.config),
+            iface = sh_quote(&awg.interface)
         ),
     };
     cmd(host, "awg.read", script).with_arg("config", awg.config.clone())
@@ -443,9 +446,9 @@ pub fn add_peer_cmd(host: &HostFile, awg: &AwgHost, peer: &NewPeer<'_>) -> Cmd {
          t=\"$conf.braid-peer.$$\"; trap 'rm -f \"$t\" \"$t.strip\"' EXIT; \
          cat > \"$t\" && cat \"$t\" >> \"$conf\" && awg-quick strip \"$conf\" > \"$t.strip\" && \
          awg syncconf {iface} \"$t.strip\" && echo BRAID_PEER=added",
-        conf = awg.config,
+        conf = sh_quote(&awg.config),
         pk = peer.public_key,
-        iface = awg.interface
+        iface = sh_quote(&awg.interface)
     );
     let script = match awg.kind {
         AwgKind::AmneziaDocker => docker_sh(&awg.container, &inner, true),
@@ -464,8 +467,8 @@ pub fn remove_peer_cmd(host: &HostFile, awg: &AwgHost, new_conf: &str, public_ke
         "umask 077; conf={conf}; t=\"$conf.braid-new.$$\"; trap 'rm -f \"$t\" \"$t.strip\"' EXIT; \
          cp -p \"$conf\" \"$t\" && cat > \"$t\" && mv -f \"$t\" \"$conf\" && \
          awg-quick strip \"$conf\" > \"$t.strip\" && awg syncconf {iface} \"$t.strip\" && echo BRAID_PEER=removed",
-        conf = awg.config,
-        iface = awg.interface
+        conf = sh_quote(&awg.config),
+        iface = sh_quote(&awg.interface)
     );
     let script = match awg.kind {
         AwgKind::AmneziaDocker => docker_sh(&awg.container, &inner, true),
@@ -498,9 +501,30 @@ pub fn clients_write_cmd(host: &HostFile, awg: &AwgHost, json: &str) -> Cmd {
     .with_stdin(json.to_owned())
 }
 
+/// Разбор `clientsTable` с хоста. Пустой ответ — пустая таблица (файла ещё нет
+/// или dry-run); всё остальное обязано быть JSON-массивом: непонятный ответ
+/// нельзя переписывать таблицей из одного нашего клиента.
+fn parse_clients_table(json: &str) -> anyhow::Result<Vec<Value>> {
+    let text = json.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: Value = serde_json::from_str(text).context("clientsTable Amnezia не JSON")?;
+    match value {
+        Value::Array(table) => Ok(table),
+        _ => bail!("clientsTable Amnezia — не массив клиентов"),
+    }
+}
+
 /// Таблица клиентов Amnezia: `[{"clientId": <pubkey>, "userData": {"clientName", "creationDate"}}]`.
-pub fn clients_table_add(json: &str, public_key: &str, name: &str, now: DateTime<Utc>) -> String {
-    let mut table: Vec<Value> = serde_json::from_str(json.trim()).unwrap_or_default();
+/// Ошибка — таблица с хоста не разобралась; писать на хост тогда нечего.
+pub fn clients_table_add(
+    json: &str,
+    public_key: &str,
+    name: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<String> {
+    let mut table = parse_clients_table(json)?;
     if !table
         .iter()
         .any(|c| c.get("clientId").and_then(Value::as_str) == Some(public_key))
@@ -513,13 +537,13 @@ pub fn clients_table_add(json: &str, public_key: &str, name: &str, now: DateTime
             }
         }));
     }
-    serde_json::to_string_pretty(&table).unwrap_or_else(|_| "[]".into())
+    Ok(serde_json::to_string_pretty(&table)?)
 }
 
-pub fn clients_table_remove(json: &str, public_key: &str) -> String {
-    let mut table: Vec<Value> = serde_json::from_str(json.trim()).unwrap_or_default();
+pub fn clients_table_remove(json: &str, public_key: &str) -> anyhow::Result<String> {
+    let mut table = parse_clients_table(json)?;
     table.retain(|c| c.get("clientId").and_then(Value::as_str) != Some(public_key));
-    serde_json::to_string_pretty(&table).unwrap_or_else(|_| "[]".into())
+    Ok(serde_json::to_string_pretty(&table)?)
 }
 
 #[cfg(test)]
@@ -586,11 +610,23 @@ mod tests {
     #[test]
     fn clients_table_add_is_idempotent() {
         let now = Utc::now();
-        let t = clients_table_add("", "K=", "alex", now);
-        let t2 = clients_table_add(&t, "K=", "alex", now);
+        let t = clients_table_add("", "K=", "alex", now).unwrap();
+        let t2 = clients_table_add(&t, "K=", "alex", now).unwrap();
         assert_eq!(t, t2);
         assert!(t.contains("\"clientName\": \"alex\""));
-        assert_eq!(clients_table_remove(&t, "K="), "[]");
+        assert_eq!(clients_table_remove(&t, "K=").unwrap(), "[]");
+    }
+
+    #[test]
+    fn unreadable_clients_table_is_an_error_not_an_empty_table() {
+        let now = Utc::now();
+        for garbage in ["<html>", "{\"clientId\": \"K=\"}", "[1,"] {
+            let err = clients_table_add(garbage, "K=", "alex", now)
+                .expect_err(garbage)
+                .to_string();
+            assert!(err.contains("clientsTable"), "{err}");
+            assert!(clients_table_remove(garbage, "K=").is_err(), "{garbage}");
+        }
     }
 }
 
@@ -735,6 +771,81 @@ mod script_tests {
             &peer,
         );
         assert!(docker.script.contains("umask 077"), "{}", docker.script);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scripts_quote_the_config_path_so_spaces_and_quotes_survive() {
+        // Путь и интерфейс из hosts/*.toml попадают в скрипт как есть — пробел
+        // и апостроф не должны ломать его посреди правки конфига.
+        let (dir, mut awg, log) = sandbox("quoted", 0o600);
+        let odd = dir.join("my vpn's");
+        fs::create_dir_all(&odd).unwrap();
+        let conf = odd.join("awg0.conf");
+        fs::rename(dir.join("awg0.conf"), &conf).unwrap();
+        awg.config = conf.to_string_lossy().into_owned();
+        awg.interface = "awg 0".into();
+        let host = HostFile::new("h", "root@h", None);
+        let peer = NewPeer {
+            public_key: "NEW=",
+            psk: Some("NEWPSK="),
+            ip: Ipv4Addr::new(10, 8, 1, 3),
+        };
+        let cmd = add_peer_cmd(&host, &awg, &peer);
+        let (ok, out) = run(&cmd, &dir, &log);
+        assert!(
+            ok && out.contains("BRAID_PEER=added"),
+            "{out}\n{}",
+            cmd.script
+        );
+        let text = fs::read_to_string(&conf).unwrap();
+        assert!(text.contains("PublicKey = NEW="), "{text}");
+        assert_eq!(
+            fs::read_to_string(&log).unwrap().trim(),
+            "600",
+            "awg syncconf получил интерфейс и strip-копию отдельными словами"
+        );
+        let read = read_cmd(&host, &awg);
+        let (ok, out) = run(&read, &dir, &log);
+        assert!(
+            ok && out.contains("PublicKey = NEW="),
+            "{out}\n{}",
+            read.script
+        );
+        let (new_conf, removed) = without_peer(&text, "NEW=");
+        assert!(removed);
+        let cmd = remove_peer_cmd(&host, &awg, &new_conf, "NEW=");
+        let (ok, out) = run(&cmd, &dir, &log);
+        assert!(
+            ok && out.contains("BRAID_PEER=removed"),
+            "{out}\n{}",
+            cmd.script
+        );
+        assert_eq!(fs::read_to_string(&conf).unwrap(), new_conf);
+
+        // Имя контейнера экранируется так же.
+        let docker = AwgHost {
+            kind: AwgKind::AmneziaDocker,
+            container: "amnezia awg's".into(),
+            ..awg.clone()
+        };
+        for cmd in [
+            clients_read_cmd(&host, &docker),
+            clients_write_cmd(&host, &docker, "[]"),
+            read_cmd(&host, &docker),
+            add_peer_cmd(&host, &docker, &peer),
+        ] {
+            assert!(
+                cmd.script
+                    .contains("docker exec 'amnezia awg'\\''s' sh -c ")
+                    || cmd
+                        .script
+                        .contains("docker exec -i 'amnezia awg'\\''s' sh -c "),
+                "{}: {}",
+                cmd.step,
+                cmd.script
+            );
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -149,6 +149,8 @@ pub struct HostState {
     pub csqtt_installed: bool,
     /// Панель не отвечает: все csqtt.* падают как curl с 503.
     pub csqtt_panel_down: bool,
+    /// `/api/clients` отдаёт не JSON (страница входа вместо списка).
+    pub csqtt_clients_unreadable: bool,
     /// пароль → имя профиля
     pub csqtt_clients: BTreeMap<String, String>,
     pub next_password: u32,
@@ -258,6 +260,9 @@ fn respond(st: &mut HostState, cmd: &Cmd) -> Output {
         } else {
             "BRAID_CSQTT=none\n"
         }),
+        "csqtt.clients" if st.csqtt_clients_unreadable => {
+            Output::success("<!doctype html><title>csqtt</title><form>login</form>\n")
+        }
         "csqtt.clients" => {
             let list: Vec<serde_json::Value> = st
                 .csqtt_clients

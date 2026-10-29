@@ -644,3 +644,146 @@ fn revoke_removes_the_peer_of_an_imported_key_too() {
     assert!(host_state.csqtt_clients.is_empty());
     assert!(!state.user_path("bob").exists());
 }
+
+#[test]
+fn unreadable_amnezia_clients_table_stops_the_command_before_any_write() {
+    // Таблица клиентов Amnezia не разобралась — её нельзя переписывать таблицей
+    // из одного нашего клиента: команда останавливается с понятной ошибкой.
+    let (state, fake) = host_with_amnezia("clients-table-garbage");
+    let garbage = "{\"unexpected\": \"object instead of array\"}";
+    fake.state.borrow_mut().clients_table = garbage.to_owned();
+    let out = run_err(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki"],
+    );
+    assert!(out.contains("clientsTable"), "{out}");
+    assert_eq!(
+        fake.shell.count("awg.clients_write"),
+        0,
+        "на хост не пишем: {:?}",
+        fake.shell.steps()
+    );
+    assert_eq!(
+        fake.state.borrow().clients_table,
+        garbage,
+        "таблица не тронута"
+    );
+    assert!(
+        fake.state.borrow().subs.is_empty(),
+        "до подписки не дошли — команда прервана"
+    );
+
+    // Таблица починилась — повтор доводит до конца без дубликатов.
+    fake.state.borrow_mut().clients_table = "[]".into();
+    fake.shell.clear();
+    run_ok(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki"],
+    );
+    assert_eq!(fake.shell.count("awg.add_peer"), 0, "пир уже на хосте");
+    assert_eq!(fake.shell.count("awg.clients_write"), 1);
+    assert!(
+        fake.state
+            .borrow()
+            .clients_table
+            .contains("\"clientName\": \"alex\"")
+    );
+
+    // То же для revoke: ключ в таблице упоминается, но она не читается —
+    // локальные записи и хост не трогаем.
+    let pubkey = state
+        .load_user_secrets("helsinki", "alex")
+        .unwrap()
+        .awg
+        .unwrap()
+        .public_key
+        .to_base64();
+    fake.state.borrow_mut().clients_table = format!("{{\"clientId\": \"{pubkey}\"}}");
+    fake.shell.clear();
+    let out = run_err(&state, &fake.shell, &["revoke", "alex"]);
+    assert!(out.contains("clientsTable"), "{out}");
+    assert_eq!(fake.shell.count("awg.clients_write"), 0);
+    assert_eq!(
+        fake.shell.count("subd.remove"),
+        0,
+        "{:?}",
+        fake.shell.steps()
+    );
+    assert!(state.user_path("alex").exists(), "пользователь остался");
+}
+
+#[test]
+fn unreadable_api_clients_stops_the_command_before_creating_a_profile() {
+    // Панель ответила не JSON (например, страницей входа) — это не «профилей
+    // нет»: второй профиль не заводится, команда останавливается.
+    let (state, fake) = host_with_amnezia("api-clients-garbage");
+    run_ok(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki"],
+    );
+    assert_eq!(fake.state.borrow().csqtt_clients.len(), 1);
+
+    fake.state.borrow_mut().csqtt_clients_unreadable = true;
+    fake.shell.clear();
+    let out = run_err(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki"],
+    );
+    assert!(out.contains("/api/clients"), "{out}");
+    assert_eq!(
+        fake.shell.count("csqtt.create"),
+        0,
+        "{:?}",
+        fake.shell.steps()
+    );
+    assert_eq!(
+        fake.state.borrow().csqtt_clients.len(),
+        1,
+        "второго профиля нет"
+    );
+}
+
+#[test]
+fn add_user_reuses_the_profile_by_name_when_the_local_password_is_lost() {
+    // Пароль CSQTT потерян локально (обрыв между созданием профиля и записью
+    // секрета): повтор находит профиль по имени и берёт его пароль.
+    let (state, fake) = host_with_amnezia("csqtt-reuse-by-name");
+    run_ok(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki"],
+    );
+    let mut secrets = state.load_user_secrets("helsinki", "alex").unwrap();
+    let password = secrets.csqtt.take().expect("профиль заведён").password;
+    state
+        .save_user_secrets("helsinki", "alex", &secrets)
+        .unwrap();
+    fake.shell.clear();
+
+    run_ok(
+        &state,
+        &fake.shell,
+        &["add-user", "alex", "--host", "helsinki"],
+    );
+    assert_eq!(
+        fake.shell.count("csqtt.create"),
+        0,
+        "профиль с нашим именем уже есть: {:?}",
+        fake.shell.steps()
+    );
+    let host_state = fake.state.borrow();
+    assert_eq!(host_state.csqtt_clients.len(), 1, "дубликата нет");
+    assert_eq!(
+        state
+            .load_user_secrets("helsinki", "alex")
+            .unwrap()
+            .csqtt
+            .map(|s| s.password),
+        Some(password),
+        "пароль переиспользован и сохранён"
+    );
+}

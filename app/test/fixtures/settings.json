@@ -4,7 +4,7 @@
     "autoconnect_default": "ask",
     "autoconnect_networks": {},
     "notify_switches": false,
-    "kill_switch": false,
+    "kill_switch": true,
     "dns_mode": "rules_only"
   },
   "changed": {
@@ -15,7 +15,7 @@
       "gw:99887766aabbccdd": "ask"
     },
     "notify_switches": true,
-    "kill_switch": true,
+    "kill_switch": false,
     "dns_mode": "all_via_tunnel"
   }
 }

@@ -101,7 +101,8 @@ pub struct CoreConfig {
     pub journal: JournalConfig,
     /// Активный движок без единого ответа дольше этого — мёртв (старт CSQTT не мгновенный).
     pub startup_grace: Duration,
-    /// Роутер не читал tun столько при живых пробах — перезапуск сессии (ист. 28).
+    /// Роутер не читал tun столько при живых пробах, хотя писал в него, —
+    /// перезапуск сессии (ист. 28); простой без записей перезапуска не даёт.
     pub watchdog_silence: Duration,
     /// Не чаще перезапускать по watchdog.
     pub watchdog_min_gap: Duration,
@@ -311,6 +312,10 @@ struct Session {
     worked_recorded: bool,
     failure_recorded: bool,
     last_watchdog: Option<Instant>,
+    /// Счётчик записей роутера в tun на прошлом тике и когда он последний раз
+    /// рос — watchdog отличает зависший интерфейс от простаивающего.
+    tun_writes_seen: u64,
+    last_tun_write: Option<Instant>,
     /// Конфигурация интерфейса — чтобы знать, менялись ли правила приложений.
     tun_cfg: TunConfig,
     /// Роутер остановлен нами (не считать `TunClosed` обрывом).
@@ -1012,6 +1017,8 @@ impl Shared {
             worked_recorded: false,
             failure_recorded: false,
             last_watchdog: None,
+            tun_writes_seen: 0,
+            last_tun_write: None,
             tun_cfg,
             stopping: false,
         });
@@ -1253,17 +1260,22 @@ impl Shared {
                 }
             }
             Action::Stay => {
-                if let Some(active) = &session.active
-                    && inner.monitor.liveness(active) == Liveness::Alive
-                    && !session.worked_recorded
-                {
-                    if session.router.active().is_none() {
+                if let Some(active) = &session.active {
+                    let liveness = inner.monitor.liveness(active);
+                    // Пригодный активный всегда стоит в роутере: после `NoneAlive`
+                    // он снят (kill switch), и когда хост оживает, трафик должен
+                    // пойти снова — независимо от того, записан ли уже успех.
+                    if matches!(liveness, Liveness::Alive | Liveness::Degraded(_))
+                        && session.router.active().as_ref() != Some(active)
+                    {
                         session.router.set_active(Some(active.clone()));
                     }
-                    if let Some(net) = &session.net {
-                        inner.memory.record(net, active, Outcome::Worked);
+                    if liveness == Liveness::Alive && !session.worked_recorded {
+                        if let Some(net) = &session.net {
+                            inner.memory.record(net, active, Outcome::Worked);
+                        }
+                        session.worked_recorded = true;
                     }
-                    session.worked_recorded = true;
                 }
             }
         }
@@ -1437,7 +1449,15 @@ impl Shared {
             self.apply_decision(&mut inner, decision.action, decision.warm, now);
             self.derive_session_state(&mut inner);
 
-            // Watchdog: tun молчит при живых пробах.
+            // Watchdog (ист. 28): tun завис — роутер в него пишет, а чтений нет
+            // при живых пробах. Простой (ни чтений, ни записей) — не повод.
+            if let Some(session) = inner.session.as_mut() {
+                let written = session.router.stats().to_tun;
+                if written != session.tun_writes_seen {
+                    session.tun_writes_seen = written;
+                    session.last_tun_write = Some(now);
+                }
+            }
             if let Some(session) = inner.session.as_ref()
                 && let Some(active) = &session.active
                 && inner.monitor.liveness(active) == Liveness::Alive
@@ -1447,7 +1467,14 @@ impl Shared {
                     .last_tun_read()
                     .map_or(session.started, |t| t.max(session.started));
                 let silent = now.duration_since(silent_since);
+                // Ответ на последний прочитанный пакет приходит сразу; записи,
+                // которые идут и во второй половине молчания, — ретрансмиты и
+                // пуш сервера в интерфейс, из которого ничего не выходит.
+                let still_writing = session
+                    .last_tun_write
+                    .is_some_and(|t| now.duration_since(t) <= self.cfg.watchdog_silence / 2);
                 if silent >= self.cfg.watchdog_silence
+                    && still_writing
                     && session
                         .last_watchdog
                         .is_none_or(|t| now.duration_since(t) >= self.cfg.watchdog_min_gap)

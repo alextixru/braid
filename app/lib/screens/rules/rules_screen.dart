@@ -11,7 +11,7 @@ import 'package:braid/widgets/section_header.dart';
 import 'package:flutter/material.dart';
 
 /// «Правила»: режим-пресет, общие наборы с переключателями и исключениями,
-/// свои домены и подсети, приложения (Android), перенос файлом (десктоп).
+/// свои домены и подсети, приложения (Android), перенос файлом.
 class RulesScreen extends StatelessWidget {
   const RulesScreen({super.key});
 

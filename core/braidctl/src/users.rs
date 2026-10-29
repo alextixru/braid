@@ -222,7 +222,9 @@ fn provision(
         if awg_host.kind == AwgKind::AmneziaDocker {
             let table = run_checked(env.shell, &awg::clients_read_cmd(host, awg_host))?.stdout;
             if !table.contains(&pubkey) {
-                let updated = awg::clients_table_add(&table, &pubkey, &name, env.now);
+                // Нечитаемая таблица — стоп до записи: пир уже в конфиге, повтор доведёт.
+                let updated = awg::clients_table_add(&table, &pubkey, &name, env.now)
+                    .context("таблица клиентов Amnezia на хосте не читается — пир добавлен, таблица не тронута; проверь clientsTable в контейнере и повтори")?;
                 run_checked(env.shell, &awg::clients_write_cmd(host, awg_host, &updated))?;
             }
         }
@@ -233,17 +235,42 @@ fn provision(
         && !user.no_csqtt
     {
         let out = run_checked(env.shell, &csqtt::clients_cmd(host, c))?;
-        let clients = csqtt::parse_clients(&out.stdout).unwrap_or_default();
+        // В dry-run хост молчит; настоящий нечитаемый ответ — не «профилей нет».
+        let clients = if dry {
+            Vec::new()
+        } else {
+            csqtt::parse_clients(&out.stdout)
+                .context("панель CSQTT ответила непонятно — профиль не заводим, повтори add-user")?
+        };
         let present = secrets
             .csqtt
             .as_ref()
             .is_some_and(|s| clients.iter().any(|cl| cl.password == s.password));
         if !present {
-            let out = run_checked(env.shell, &csqtt::create_cmd(host, c, &name))?;
-            if !dry {
-                let password = csqtt::parse_created(&out.stdout)?;
-                secrets.csqtt = Some(CsqttSecrets { password });
-                env.state.save_user_secrets(&host_id, &name, &secrets)?;
+            // Пароль потерян локально (обрыв между созданием профиля и записью
+            // секрета) — профиль с нашим именем на хосте переиспользуется.
+            let by_name = secrets.csqtt.is_none().then(|| {
+                clients
+                    .iter()
+                    .find(|cl| cl.name == name && !cl.password.is_empty())
+            });
+            match by_name.flatten() {
+                Some(found) => {
+                    secrets.csqtt = Some(CsqttSecrets {
+                        password: found.password.clone(),
+                    });
+                    if !dry {
+                        env.state.save_user_secrets(&host_id, &name, &secrets)?;
+                    }
+                }
+                None => {
+                    let out = run_checked(env.shell, &csqtt::create_cmd(host, c, &name))?;
+                    if !dry {
+                        let password = csqtt::parse_created(&out.stdout)?;
+                        secrets.csqtt = Some(CsqttSecrets { password });
+                        env.state.save_user_secrets(&host_id, &name, &secrets)?;
+                    }
+                }
             }
         }
     }
@@ -331,7 +358,9 @@ pub fn revoke(env: &mut Env<'_>, name: &str) -> anyhow::Result<()> {
         if awg_host.kind == AwgKind::AmneziaDocker {
             let table = run_checked(env.shell, &awg::clients_read_cmd(&host, awg_host))?.stdout;
             if table.contains(&pubkey) || dry {
-                let updated = awg::clients_table_remove(&table, &pubkey);
+                let updated = awg::clients_table_remove(&table, &pubkey).context(
+                    "таблица клиентов Amnezia на хосте не читается — ничего не удалено; проверь clientsTable в контейнере и повтори revoke",
+                )?;
                 run_checked(
                     env.shell,
                     &awg::clients_write_cmd(&host, awg_host, &updated),

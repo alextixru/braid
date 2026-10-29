@@ -1,3 +1,4 @@
+import 'package:braid/app.dart' show appName;
 import 'package:braid/controller/braid_controller.dart';
 import 'package:braid/controller/braid_scope.dart';
 import 'package:braid/controller/connect_models.dart';
@@ -256,7 +257,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
             autocorrect: false,
             enableSuggestions: false,
             decoration: InputDecoration(
-              labelText: 'Новая ссылка Braid',
+              labelText: 'Новая ссылка $appName',
               hintText: 'braid://…',
               errorText: _error,
               errorMaxLines: 3,
@@ -326,7 +327,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                 LinkQr(data: link),
                 const SizedBox(height: 12),
                 Text(
-                  'Отсканируй его в Braid на другом устройстве. '
+                  'Отсканируй его в $appName на другом устройстве. '
                   'Это твой доступ — не показывай посторонним.',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodySmall,

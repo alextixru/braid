@@ -1,3 +1,4 @@
+import 'package:braid/app.dart' show appName;
 import 'package:braid/services/qr_scanner.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -85,7 +86,7 @@ class _ScannerError extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = switch (error.errorCode) {
       MobileScannerErrorCode.permissionDenied =>
-        'Нет доступа к камере. Разреши камеру для Braid в настройках Android '
+        'Нет доступа к камере. Разреши камеру для $appName в настройках Android '
             'или вставь ссылку вручную.',
       MobileScannerErrorCode.unsupported =>
         'На этом устройстве камера не читает QR. Вставь ссылку вручную.',

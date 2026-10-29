@@ -1,10 +1,11 @@
-/// Перенос своих правил файлом (десктоп, ист. 52): домены и подсети в JSON.
-/// Приложения не переносятся — они бывают только на Android, где работает
-/// системная резервная копия.
+/// Перенос своих правил файлом (десктоп и Android, ист. 52): домены и
+/// подсети в JSON. Приложения не переносятся — это имена пакетов конкретного
+/// устройства, на другом они бессмысленны.
 library;
 
 import 'dart:convert';
 
+import 'package:braid/app.dart' show appName;
 import 'package:braid/util/rule_input.dart';
 
 /// Что нашлось в файле: принятое в каноническом виде и отброшенное как есть.
@@ -49,13 +50,15 @@ abstract final class RulesTransfer {
     try {
       json = jsonDecode(text);
     } on FormatException {
-      throw const FormatException('Это не файл правил Braid');
+      throw const FormatException('Это не файл правил $appName');
     }
     if (json is! Map<String, dynamic> || json['format'] != format) {
-      throw const FormatException('Это не файл правил Braid');
+      throw const FormatException('Это не файл правил $appName');
     }
     if (json['version'] != version) {
-      throw const FormatException('Файл правил другой версии — обнови Braid');
+      throw const FormatException(
+        'Файл правил другой версии — обнови $appName',
+      );
     }
     final rejected = <String>[];
     final domains = <String>[];
@@ -83,7 +86,9 @@ abstract final class RulesTransfer {
 
   static Iterable<String> _strings(Object? value) {
     if (value == null) return const [];
-    if (value is! List) throw const FormatException('Это не файл правил Braid');
+    if (value is! List) {
+      throw const FormatException('Это не файл правил $appName');
+    }
     return value.map((e) => e is String ? e : '$e');
   }
 
