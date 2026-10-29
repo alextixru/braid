@@ -1,0 +1,14 @@
+[package]
+name = "braid-engine-awg"
+description = "Движок AWG: Rust-обёртка над libawg (C API, cgo c-shared над amneziawg-go/v3)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+braid-core.workspace = true
+braid-proto.workspace = true
+tracing.workspace = true
