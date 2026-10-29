@@ -1,0 +1,30 @@
+{
+  "rules_changes": {
+    "toggle_set_off": { "change": "toggle_set", "id": "google", "on": false },
+    "toggle_set_on": { "change": "toggle_set", "id": "cursor", "on": true },
+    "select_mode": { "change": "select_mode", "id": "home" },
+    "add_user_domain": { "change": "add_user_domain", "domain": "x.y" },
+    "remove_user_domain": { "change": "remove_user_domain", "domain": "x.y" },
+    "add_user_cidr": { "change": "add_user_cidr", "cidr": "10.0.0.0/8" },
+    "remove_user_cidr": { "change": "remove_user_cidr", "cidr": "10.0.0.0/8" },
+    "set_apps_all": { "change": "set_apps", "apps": { "mode": "all" } },
+    "set_apps_allowed": {
+      "change": "set_apps",
+      "apps": { "mode": "allowed", "packages": ["org.example.one", "org.example.two"] }
+    },
+    "set_apps_excluded": {
+      "change": "set_apps",
+      "apps": { "mode": "excluded", "packages": ["org.bank.app"] }
+    }
+  },
+  "engine_modes": {
+    "auto": { "mode": "auto" },
+    "pinned": { "mode": "pinned", "engine": "csqtt" }
+  },
+  "user_inputs": {
+    "captcha_result": { "input": "captcha_result", "value": "tok" },
+    "vk_hashes": { "input": "vk_hashes", "values": ["a", "b"] },
+    "vk_token": { "input": "vk_token", "value": "t" },
+    "vk_logout": { "input": "vk_token", "value": "" }
+  }
+}

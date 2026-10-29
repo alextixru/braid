@@ -1,0 +1,9 @@
+[
+  { "name": "idle", "session": { "state": "idle" } },
+  { "name": "needs_link", "session": { "state": "needs_link" } },
+  { "name": "connecting", "session": { "state": "connecting" } },
+  { "name": "connected", "session": { "state": "connected" } },
+  { "name": "no_host", "session": { "state": "no_host", "last_error": "Проба к хосту не ответила" } },
+  { "name": "interrupted_other_vpn", "session": { "state": "interrupted", "by_other_vpn": true } },
+  { "name": "interrupted", "session": { "state": "interrupted", "by_other_vpn": false } }
+]

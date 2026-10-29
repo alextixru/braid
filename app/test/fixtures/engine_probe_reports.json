@@ -1,0 +1,5 @@
+[
+  { "engine": "awg", "state": "connected", "rtt_ms": 41, "loss_pct": 0, "handshake_age_s": 9 },
+  { "engine": "csqtt", "state": "waiting_user", "rtt_ms": null, "loss_pct": 100, "handshake_age_s": null },
+  { "engine": "wg-next", "state": "degraded", "rtt_ms": 2300, "loss_pct": 60, "handshake_age_s": 140 }
+]

@@ -1,0 +1,56 @@
+{
+  "ready": true,
+  "state": {
+    "session": { "state": "connected" },
+    "active": "awg",
+    "engines": [
+      {
+        "id": "awg",
+        "kind": "awg",
+        "state": "connected",
+        "health": { "rtt_ms": 38, "loss_pct": 0, "handshake_age_s": 12 },
+        "pinned": false,
+        "warm": false,
+        "user_action": null
+      },
+      {
+        "id": "csqtt",
+        "kind": "csqtt",
+        "state": "waiting_user",
+        "health": { "rtt_ms": null, "loss_pct": 0, "handshake_age_s": null },
+        "pinned": true,
+        "warm": true,
+        "user_action": { "action": "captcha", "url": "https://id.vk.example/captcha", "session": "s-1" }
+      }
+    ],
+    "rules": {
+      "sets": [
+        { "id": "google", "name": "Google", "enabled": true, "domains": 3, "ips": 2 },
+        { "id": "cursor", "name": "Cursor", "enabled": false, "domains": 2, "ips": 0 }
+      ],
+      "mode": "work",
+      "user_domains": ["example.org"],
+      "user_cidrs": ["10.20.0.0/16"],
+      "apps": { "mode": "excluded", "packages": ["org.bank.app"] }
+    },
+    "subscription": {
+      "host_id": "frankfurt",
+      "host_name": "Франкфурт",
+      "version": 7,
+      "updated_at": "2026-10-29T10:15:00Z",
+      "last_refresh_error": "Хост недоступен",
+      "revoked": false
+    },
+    "network": "wifi:00aa11bb22cc33dd",
+    "banners": [
+      { "banner": "update_available", "latest": "0.2.0", "url": "https://example.org/Braid.zip" },
+      { "banner": "needs_hashes" },
+      { "banner": "needs_vk_login" },
+      { "banner": "subscription_stale", "since": "2026-10-28T08:00:00Z" },
+      { "banner": "revoked" },
+      { "banner": "other_vpn", "iface": "utun3" },
+      { "banner": "autoconnect_ask", "network": "wifi:00aa11bb22cc33dd" }
+    ],
+    "admin": true
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "defaults": {
+    "autostart": false,
+    "autoconnect_default": "ask",
+    "autoconnect_networks": {},
+    "notify_switches": false,
+    "kill_switch": false,
+    "dns_mode": "rules_only"
+  },
+  "changed": {
+    "autostart": true,
+    "autoconnect_default": "never",
+    "autoconnect_networks": {
+      "wifi:00aa11bb22cc33dd": "connect",
+      "gw:99887766aabbccdd": "ask"
+    },
+    "notify_switches": true,
+    "kill_switch": true,
+    "dns_mode": "all_via_tunnel"
+  }
+}

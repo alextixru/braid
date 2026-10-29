@@ -1,0 +1,14 @@
+{
+  "import": {
+    "imported": { "outcome": "imported" },
+    "replace_requested": {
+      "outcome": "replace_requested",
+      "current_host": "Франкфурт",
+      "new_host": "198.51.100.20"
+    }
+  },
+  "refresh": {
+    "updated": { "outcome": "updated", "version": 8 },
+    "not_modified": { "outcome": "not_modified" }
+  }
+}

@@ -4,6 +4,9 @@ description = "Мост Flutter ↔ ядро Braid (flutter_rust_bridge); соб
 version = "0.1.0"
 edition = "2021"
 publish = false
+build = "build.rs"
+# Мост линкует braid-runtime → braid-engine-csqtt → csqtt-core (PolyForm Noncommercial 1.0.0).
+license = "PolyForm-Noncommercial-1.0.0"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
@@ -12,7 +15,32 @@ crate-type = ["cdylib", "staticlib"]
 flutter_rust_bridge = "=2.12.0"
 braid-core = { path = "../../core/braid-core" }
 braid-platform = { path = "../../core/braid-platform" }
+braid-proto = { path = "../../core/braid-proto" }
+braid-runtime = { path = "../../core/braid-runtime" }
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Только `block_on(watch::Receiver::changed())` в потоке ленты состояний.
+tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
+
+# Логи ядра и сервиса идут через `tracing`. На Android их забирает слой logcat
+# (`logging.rs`); на остальных ОС подписчик не ставится. Зависимости — только
+# под Android и в тестах (проверка политики уровней на хосте).
+[target.'cfg(target_os = "android")'.dependencies]
+tracing = "0.1"
+tracing-android = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+
+[dev-dependencies]
+chrono = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+# [BRAID] csqtt-core тянет primp из обрезанной вендорной копии; патч действует
+# только из корневого манифеста — для моста (отдельный корень) он нужен здесь,
+# как и в core/Cargo.toml.
+[patch.crates-io]
+primp = { path = "../../engines/csqtt-core/vendor/primp" }

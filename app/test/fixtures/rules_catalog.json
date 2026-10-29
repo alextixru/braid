@@ -1,0 +1,38 @@
+{
+  "sets": [
+    {
+      "id": "google",
+      "name": "Google",
+      "domains": 3,
+      "ips": 2,
+      "exclude_domains": ["mail.google.com"],
+      "exclude_ips": ["142.251.1.0/24"]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "domains": 2,
+      "ips": 0,
+      "exclude_domains": [],
+      "exclude_ips": []
+    }
+  ],
+  "modes": [
+    {
+      "id": "work",
+      "name": "Работа",
+      "sets": ["google", "cursor"],
+      "exclude_domains": ["calendar.google.com"],
+      "exclude_ips": [],
+      "default": true
+    },
+    {
+      "id": "home",
+      "name": "Дом",
+      "sets": ["google"],
+      "exclude_domains": [],
+      "exclude_ips": [],
+      "default": false
+    }
+  ]
+}

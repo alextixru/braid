@@ -3,9 +3,55 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
+import '../error.dart';
 import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Версия ядра из `Cargo.toml` крейта `braid-core` — для экрана «О программе».
 String coreVersion() => RustLib.instance.api.crateApiBraidCoreVersion();
+
+/// Версия самого приложения (крейт моста): по ней ядро сверяет `client.latest`
+/// подписки, её же показывает «О программе». Одна на всё — `VERSION` в корне.
+String clientVersion() => RustLib.instance.api.crateApiBraidClientVersion();
+
+/// Ядро создано. На Android до этого момента сервис ещё стартует, и окно
+/// показывает «Сервис запускается».
+bool coreReady() => RustLib.instance.api.crateApiBraidCoreReady();
+
+PlatformCaps platformCaps() => RustLib.instance.api.crateApiBraidPlatformCaps();
+
+/// Построить ядро в `storage_dir` (macOS, Linux, Windows) или убедиться, что
+/// его строит сервис (Android). `true` — ядро готово. Повторный вызов безвреден.
+Future<bool> startCore({required String storageDir}) =>
+    RustLib.instance.api.crateApiBraidStartCore(storageDir: storageDir);
+
+/// Поток состояний: JSON-кадры `{"ready": bool, "state": CoreState}`. Первый
+/// кадр приходит сразу, дальше — на каждое изменение; до появления ядра —
+/// один кадр `ready: false`.
+Stream<String> watchState() => RustLib.instance.api.crateApiBraidWatchState();
+
+/// Что умеет платформа: приложения в правилах, значок в меню-баре, сканер QR.
+class PlatformCaps {
+  final bool perApp;
+  final bool menuBar;
+  final bool qrScan;
+
+  const PlatformCaps({
+    required this.perApp,
+    required this.menuBar,
+    required this.qrScan,
+  });
+
+  @override
+  int get hashCode => perApp.hashCode ^ menuBar.hashCode ^ qrScan.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlatformCaps &&
+          runtimeType == other.runtimeType &&
+          perApp == other.perApp &&
+          menuBar == other.menuBar &&
+          qrScan == other.qrScan;
+}

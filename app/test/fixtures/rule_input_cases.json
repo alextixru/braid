@@ -1,0 +1,34 @@
+{
+  "domains": [
+    { "input": "https://x.y/путь", "ok": "x.y" },
+    { "input": "  HTTPS://User@Example.COM:8443/a?b=c#d  ", "ok": "example.com" },
+    { "input": "https://site.com/page?utm=1", "ok": "site.com" },
+    { "input": "*.google.com", "ok": "*.google.com" },
+    { "input": "Sub.Example.Org.", "ok": "sub.example.org" },
+    { "input": "example.com:8080", "ok": "example.com" },
+    { "input": "api_v2.my-site.io", "ok": "api_v2.my-site.io" },
+    { "input": "localhost", "error": true },
+    { "input": "1.2.3.4", "error": true },
+    { "input": "", "error": true },
+    { "input": "   ", "error": true },
+    { "input": "exa mple.com", "error": true },
+    { "input": "-bad.com", "error": true },
+    { "input": "bad-.com", "error": true },
+    { "input": "a..b.com", "error": true },
+    { "input": "пример.рф", "error": true },
+    { "input": "foo.*.com", "error": true },
+    { "input": "http://[::1]:80/", "error": true }
+  ],
+  "cidrs": [
+    { "input": "10.0.0.0/8", "ok": "10.0.0.0/8" },
+    { "input": " 10.1.2.3/8 ", "ok": "10.0.0.0/8" },
+    { "input": "192.168.1.5", "ok": "192.168.1.5/32" },
+    { "input": "142.250.0.0/15", "ok": "142.250.0.0/15" },
+    { "input": "300.1.1.1/8", "error": true },
+    { "input": "10.0.0.0/33", "error": true },
+    { "input": "10.0.0/8", "error": true },
+    { "input": "2001:db8::/32", "error": true },
+    { "input": "example.com", "error": true },
+    { "input": "", "error": true }
+  ]
+}
