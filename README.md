@@ -112,7 +112,7 @@ Split-туннель для сервера zen: `python3 tools/gen_zen_vpnsplit.
 | `make macos`, `make apk` | `Braid.app` (universal, ad-hoc, zip) и APK в `dist/` — нужны Xcode и NDK с Java, делает CI |
 | `make set-version V=x.y.z` | поменять версию везде; `make release` — проверить версию и свободный тег, собрать всё |
 
-Один тест: `cd core && cargo test -p braid-runtime --test e2e` · `cd core && cargo test -p braid-core nat::` ·
+Один тест: `cd core && cargo test -p braid-runtime --test e2e` · `cd core && cargo test -p braid-core --test router_nat` ·
 `cd app && flutter test test/rules_test.dart` · `cd engines/awg-go && go test ./... -run TestPktTun`.
 
 **Версия** одна на всё — файл `VERSION`; копии в `core/Cargo.toml`, `app/rust/Cargo.toml`

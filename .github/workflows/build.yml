@@ -158,6 +158,15 @@ jobs:
       - name: libawg.so (arm64-v8a, x86_64)
         run: make libawg-android
 
+      # Gradle-обёртки (gradlew, gradlew.bat, gradle/wrapper/gradle-wrapper.jar) в git
+      # нет — их скрывает app/android/.gitignore, и после `flutter pub get` в свежем
+      # клоне их тоже нет: кладёт их Flutter при сборке. `--config-only` готовит
+      # Gradle-проект и обёртку, ничего не собирая, поэтому тесты ниже идут раньше
+      # `cargo check` и `make apk`, а не после них.
+      - name: Gradle-обёртка (flutter build apk --config-only)
+        working-directory: app
+        run: flutter build apk --config-only
+
       # 21 unit-тест Kotlin тикета 09 и ремонта (описание интерфейса, домен из
       # share-меню, идентификатор сети, список приложений, вид уведомления).
       - name: Kotlin unit-тесты сервиса
