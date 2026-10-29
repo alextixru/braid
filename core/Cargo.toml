@@ -75,3 +75,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 jni = "0.22"                 # android
 core-foundation = "0.10"     # macos
 system-configuration = "0.8" # macos
+
+# [BRAID] csqtt-core (engines/csqtt-core) тянет primp из обрезанной вендорной копии;
+# патчи действуют только из корневого манифеста workspace, поэтому он здесь.
+[patch.crates-io]
+primp = { path = "../engines/csqtt-core/vendor/primp" }

@@ -8,7 +8,8 @@
 | Компонент | Где | Лицензия | Примечание |
 |---|---|---|---|
 | amneziawg-go (v3) | `engines/awg-go` → `libawg` | MIT | ядро AmneziaWG как библиотека; форк не нужен |
-| csqtt-core (форк FOCSQ, `feat/macos` a485014) | `engines/csqtt-core` | **PolyForm Noncommercial 1.0.0** | действует на всё, что его линкует: сборки Braid с CSQTT — только некоммерческое использование, для себя и своих. Код PWDTT не включён |
+| csqtt-core 2.1.9 (форк FOCSQ luminescq/focsq, `feat/macos` a485014; ядро © amurcanov, порт © luminescq, macOS-порт © alextixru) | `engines/csqtt-core` → `core/braid-engine-csqtt` | **PolyForm Noncommercial 1.0.0** | действует на всё, что его линкует: сборки Braid с CSQTT — только некоммерческое использование, для себя и своих. Код PWDTT не включён. Правки под `[BRAID]`, источник и список — `engines/csqtt-core/BRAID-PROVENANCE.md` |
+| primp 1.3.1 (deedy5, обрезанная вендорная копия из FOCSQ; `primp-reqwest` — из crates.io) | `engines/csqtt-core/vendor/primp` (патч `[patch.crates-io]` в `core/Cargo.toml`) | MIT | HTTP-клиент с имитацией TLS/HTTP2-отпечатка браузера для VK API ядра CSQTT; в копии только `Cargo.toml` и `src/`, текст лицензии — в оригинале на crates.io |
 | csqtt-tun-helper / tun_darwin.rs (FOCSQ) | источник для `braid-helper` | PolyForm Noncommercial 1.0.0 | провенанс — в заголовках файлов |
 | cargokit | `app/rust_builder/cargokit` | MIT | сборка Rust внутри `flutter build` |
 
