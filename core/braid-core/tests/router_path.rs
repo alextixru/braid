@@ -19,7 +19,7 @@ use braid_core::{
 use router_common::*;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const FIXTURE: &str = include_str!("../../braid-proto/tests/fixtures/subscription-v1.json");
 const ENGINE_IP: Ipv4Addr = Ipv4Addr::new(10, 8, 1, 5);
@@ -250,7 +250,16 @@ fn datagram_to_fake_ip_returns_with_restored_addresses() {
     );
 
     udp_round_trip(&bench, fake, 7777, b"hi");
-    let stats = bench.router.stats();
+    // Роутер увеличивает `to_tun` после записи в tun, а тест забирает пакет
+    // из tun сразу — ждём, пока счётчик догонит записи (два ответа DNS + эхо).
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let stats = loop {
+        let stats = bench.router.stats();
+        if stats.to_tun >= 3 || Instant::now() >= deadline {
+            break stats;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     assert_eq!(
         (stats.to_engine, stats.from_engine, stats.to_tun >= 3),
         (1, 1, true)
