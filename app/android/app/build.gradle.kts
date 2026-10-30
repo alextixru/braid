@@ -6,10 +6,13 @@ plugins {
 
 android {
     namespace = "org.braid.vpn"
-    compileSdk = flutter.compileSdkVersion
+    // receive_sharing_intent требует compileSdk 37 и выше.
+    compileSdk = maxOf(flutter.compileSdkVersion, 37)
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // flutter_local_notifications требует core library desugaring.
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -65,6 +68,7 @@ flutter {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     // Unit-тесты описания интерфейса, домена из share-меню и идентификатора сети
     // (`./gradlew :app:testDebugUnitTest`, CI — тикет 12).
     testImplementation("junit:junit:4.13.2")

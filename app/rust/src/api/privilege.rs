@@ -16,7 +16,7 @@ fn with_privilege<T>(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn with_privilege<T>(_f: impl FnOnce(&()) -> Result<T, BridgeError>) -> Result<T, BridgeError> {
+fn unsupported<T>() -> Result<T, BridgeError> {
     Err(BridgeError::new(
         BridgeErrorKind::Unsupported,
         "Правило sudoers есть только на macOS",
@@ -37,11 +37,26 @@ pub fn privilege_status() -> PrivilegeStatus {
 
 /// Что будет установлено: правило и команда. Ничего не ставит.
 pub fn plan_sudoers_install() -> Result<SudoersPlan, BridgeError> {
-    with_privilege(|p| p.plan())
+    #[cfg(target_os = "macos")]
+    {
+        with_privilege(|p| p.plan())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        unsupported()
+    }
 }
 
 /// Поставить правило: диалог пароля администратора. `command` — та самая
 /// команда из плана, на которую согласился пользователь.
 pub fn apply_sudoers_install(command: String) -> Result<(), BridgeError> {
-    with_privilege(|p| p.apply(&command))
+    #[cfg(target_os = "macos")]
+    {
+        with_privilege(|p| p.apply(&command))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = command;
+        unsupported()
+    }
 }
