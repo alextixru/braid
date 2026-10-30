@@ -17,11 +17,23 @@ use serde_json::{Value, json};
 use std::net::Ipv4Addr;
 
 pub const AMNEZIA_CONTAINER: &str = "amnezia-awg";
+/// Контейнер AmneziaWG 2 новых версий Amnezia: интерфейс `awg0`, конфиг `awg0.conf`.
+pub const AMNEZIA_CONTAINER_V2: &str = "amnezia-awg2";
 pub const AMNEZIA_CONF: &str = "/opt/amnezia/awg/wg0.conf";
 pub const AMNEZIA_PUBKEY: &str = "/opt/amnezia/awg/wireguard_server_public_key";
 pub const AMNEZIA_PSK: &str = "/opt/amnezia/awg/wireguard_psk.key";
 pub const AMNEZIA_CLIENTS: &str = "/opt/amnezia/awg/clientsTable";
 pub const AMNEZIA_INTERFACE: &str = "wg0";
+pub const AMNEZIA_INTERFACE_V2: &str = "awg0";
+
+/// Интерфейс AWG в контейнере Amnezia по имени контейнера.
+pub fn amnezia_interface(container: &str) -> &'static str {
+    if container == AMNEZIA_CONTAINER_V2 {
+        AMNEZIA_INTERFACE_V2
+    } else {
+        AMNEZIA_INTERFACE
+    }
+}
 pub const NATIVE_CONF_DIR: &str = "/etc/amnezia/amneziawg";
 pub const DEFAULT_DNS: [&str; 2] = ["1.1.1.1", "1.0.0.1"];
 pub const DEFAULT_KEEPALIVE: u16 = 25;
@@ -258,13 +270,16 @@ pub struct Detected {
 
 pub fn detect_cmd(host: &HostFile) -> Cmd {
     let script = format!(
-        "if command -v docker >/dev/null 2>&1 && docker ps --format '{{{{.Names}}}}' 2>/dev/null | grep -qx {c}; then \
+        "if command -v docker >/dev/null 2>&1 && docker ps --format '{{{{.Names}}}}' 2>/dev/null | grep -qx {c2}; then \
+           echo BRAID_AWG=amnezia-docker; echo BRAID_AWG_CONTAINER={c2}; \
+         elif command -v docker >/dev/null 2>&1 && docker ps --format '{{{{.Names}}}}' 2>/dev/null | grep -qx {c}; then \
            echo BRAID_AWG=amnezia-docker; echo BRAID_AWG_CONTAINER={c}; \
          elif command -v awg >/dev/null 2>&1; then \
            iface=$(awg show interfaces 2>/dev/null | awk '{{print $1}}'); \
            if [ -n \"$iface\" ]; then echo BRAID_AWG=native; echo \"BRAID_AWG_IFACE=$iface\"; else echo BRAID_AWG=none; fi; \
          else echo BRAID_AWG=none; fi",
-        c = AMNEZIA_CONTAINER
+        c = AMNEZIA_CONTAINER,
+        c2 = AMNEZIA_CONTAINER_V2
     );
     cmd(host, "awg.detect", script)
 }
@@ -276,11 +291,16 @@ pub fn parse_detect(out: &str) -> Option<Detected> {
             .map(|v| v.trim().to_owned())
     };
     match value("BRAID_AWG")?.as_str() {
-        "amnezia-docker" => Some(Detected {
-            kind: AwgKind::AmneziaDocker,
-            container: value("BRAID_AWG_CONTAINER").unwrap_or_else(|| AMNEZIA_CONTAINER.into()),
-            interface: AMNEZIA_INTERFACE.into(),
-        }),
+        "amnezia-docker" => {
+            let container =
+                value("BRAID_AWG_CONTAINER").unwrap_or_else(|| AMNEZIA_CONTAINER.into());
+            let interface = amnezia_interface(&container).into();
+            Some(Detected {
+                kind: AwgKind::AmneziaDocker,
+                container,
+                interface,
+            })
+        }
         "native" => {
             let interface = value("BRAID_AWG_IFACE").unwrap_or_else(|| "awg0".into());
             Some(Detected {
@@ -296,7 +316,10 @@ pub fn parse_detect(out: &str) -> Option<Detected> {
 /// Пути конфигурации по виду установки.
 pub fn skeleton(detected: &Detected) -> AwgHost {
     let config = match detected.kind {
-        AwgKind::AmneziaDocker => AMNEZIA_CONF.to_owned(),
+        AwgKind::AmneziaDocker if detected.interface == AMNEZIA_INTERFACE => {
+            AMNEZIA_CONF.to_owned()
+        }
+        AwgKind::AmneziaDocker => format!("/opt/amnezia/awg/{}.conf", detected.interface),
         AwgKind::Native => format!("{NATIVE_CONF_DIR}/{}.conf", detected.interface),
     };
     AwgHost {
@@ -327,7 +350,7 @@ pub fn read_cmd(host: &HostFile, awg: &AwgHost) -> Cmd {
         AwgKind::AmneziaDocker => docker_sh(
             &awg.container,
             &format!(
-                "echo \"### conf\"; cat {conf}; echo; echo \"### pubkey\"; cat {pk} 2>/dev/null; echo; \
+                "echo \"### conf\"; cat {conf}; echo; echo \"### pubkey\"; cat {pk} 2>/dev/null || cat {pk}.key 2>/dev/null; echo; \
                  echo \"### psk\"; cat {psk} 2>/dev/null; echo",
                 conf = sh_quote(&awg.config),
                 pk = AMNEZIA_PUBKEY,
@@ -549,6 +572,23 @@ pub fn clients_table_remove(json: &str, public_key: &str) -> anyhow::Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detect_new_amnezia_container_uses_awg0() {
+        let d =
+            parse_detect("BRAID_AWG=amnezia-docker\nBRAID_AWG_CONTAINER=amnezia-awg2\n").unwrap();
+        assert_eq!(
+            (d.container.as_str(), d.interface.as_str()),
+            ("amnezia-awg2", "awg0")
+        );
+        assert_eq!(skeleton(&d).config, "/opt/amnezia/awg/awg0.conf");
+        let old =
+            parse_detect("BRAID_AWG=amnezia-docker\nBRAID_AWG_CONTAINER=amnezia-awg\n").unwrap();
+        assert_eq!(
+            (old.interface.as_str(), skeleton(&old).config.as_str()),
+            ("wg0", AMNEZIA_CONF)
+        );
+    }
 
     const CONF: &str = "[Interface]\nPrivateKey = x\nAddress = 10.8.1.1/24\nListenPort = 55424\nJc = 4\nJmin = 10\nJmax = 50\nS1 = 15\nS2 = 18\nH1 = 100000-200000\nH2 = 2\nH3 = 3\nH4 = 4\n\n[Peer]\nPublicKey = AAA=\nPresharedKey = PPP=\nAllowedIPs = 10.8.1.2/32\n\n[Peer]\nPublicKey = BBB=\nAllowedIPs = 10.8.1.3/32\n\n";
 
