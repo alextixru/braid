@@ -653,7 +653,9 @@ mod script_tests {
         fs::set_permissions(&conf, fs::Permissions::from_mode(conf_mode)).unwrap();
         let log = dir.join("modes.log");
         // `awg syncconf` записывает режим переданного ему файла (strip-копии конфига).
-        let awg = "#!/bin/sh\nif [ \"$1\" = syncconf ]; then (stat -f %Lp \"$3\" 2>/dev/null || stat -c %a \"$3\") >> \"$BRAID_TEST_LOG\"; fi\nexit 0\n";
+        // Сначала GNU-форма: на Linux `stat -f` значит «файловая система», печатает её
+        // описание и лишь потом падает; BSD `stat -c` падает молча, без вывода.
+        let awg = "#!/bin/sh\nif [ \"$1\" = syncconf ]; then (stat -c %a \"$3\" 2>/dev/null || stat -f %Lp \"$3\") >> \"$BRAID_TEST_LOG\"; fi\nexit 0\n";
         let quick = "#!/bin/sh\n[ \"$1\" = strip ] || exit 2\ncat \"$2\"\n";
         for (name, body) in [("awg", awg), ("awg-quick", quick)] {
             let path = dir.join("bin").join(name);
